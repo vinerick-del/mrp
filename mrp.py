@@ -50,6 +50,11 @@ CLASSE_C_COBERTURA_MESES = 4   # Meses cobertos por pedido Classe C
 DIR_DADOS = "data"
 DIR_SAIDA = "output"
 
+# Arquivo de demanda bruta no formato DTM (dd/mm/yyyy).
+# Quando definido e o arquivo existir, substitui demanda.csv como fonte de demanda.
+# Definir como None para usar demanda.csv diretamente.
+ARQUIVO_DEMANDA_RAW = "demanda_dtm_raw.csv"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # UTILITÁRIOS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,14 +125,129 @@ def calcular_periodo_entrega(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PRÉ-PROCESSAMENTO: TRANSFORMAR DEMANDA NO FORMATO BRUTO DTM
+# ─────────────────────────────────────────────────────────────────────────────
+def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
+    """
+    Lê o arquivo de demanda no formato bruto DTM e aplica o mapeamento oficial:
+
+      CÓDIGO  → material
+      MÊS     → mes  (dd/mm/yyyy → YYYY-MM)  ← ÚNICA coluna de data utilizada
+      DEP.    → departamento
+      PROJETO → programa_orcamentario
+      QTD     → quantidade  (numérico; negativos sinalizados)
+
+    Colunas ignoradas: Nome Demanda, DEPÓSITO, Descrição, UNID, MES, SEMANA
+
+    Adiciona flag_demanda_ativa = True quando a soma anual do material > 0.
+    Materiais com flag_demanda_ativa = False são mantidos no MRP (sem geração
+    de pedidos) para preservar rastreabilidade.
+
+    Retorna DataFrame com colunas:
+      material | mes | departamento | programa_orcamentario | quantidade | flag_demanda_ativa
+    """
+    separador("PRÉ-PROCESSAMENTO │ TRANSFORMAR DEMANDA DTM")
+
+    df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig", dtype=str)
+
+    # ── Mapeamento oficial de colunas ─────────────────────────────────────────
+    col_map = {
+        "CÓDIGO" : "material",
+        "MÊS"    : "_mes_raw",
+        "DEP."   : "departamento",
+        "PROJETO": "programa_orcamentario",
+        "QTD"    : "quantidade",
+    }
+    colunas_ausentes = [c for c in col_map if c not in df.columns]
+    if colunas_ausentes:
+        raise ValueError(f"Colunas obrigatórias ausentes no arquivo: {colunas_ausentes}")
+
+    df = df.rename(columns=col_map)[[
+        "material", "_mes_raw", "departamento", "programa_orcamentario", "quantidade"
+    ]]
+
+    # ── Normalização de datas: dd/mm/yyyy → YYYY-MM ───────────────────────────
+    df["mes"] = (
+        pd.to_datetime(df["_mes_raw"], format="%d/%m/%Y", errors="coerce")
+        .dt.to_period("M")
+        .astype("object")
+        .where(lambda s: s.notna(), other=None)
+    )
+    # Converter Period para string (mantém None para inválidas)
+    df["mes"] = df["mes"].apply(lambda v: str(v) if v is not None and str(v) != "NaT" else None)
+
+    invalidas = df["mes"].isna()
+    if invalidas.any():
+        print(f"  ⚠  Datas inválidas (coluna MÊS): {invalidas.sum()} registro(s)")
+        print(df[invalidas][["material", "_mes_raw"]].to_string(index=False))
+        df = df[~invalidas].copy()
+
+    df = df.drop(columns=["_mes_raw"])
+
+    # ── Conversão de quantidade para numérico ─────────────────────────────────
+    df["quantidade"] = pd.to_numeric(df["quantidade"], errors="coerce")
+
+    nao_num = df["quantidade"].isna()
+    if nao_num.any():
+        print(f"  ⚠  Quantidades não numéricas: {nao_num.sum()} registro(s) → convertidos para 0")
+    df["quantidade"] = df["quantidade"].fillna(0)
+
+    negativos = df["quantidade"] < 0
+    if negativos.any():
+        print(f"  ⚠  Quantidades NEGATIVAS: {negativos.sum()} registro(s)")
+        print(df[negativos][["material", "mes", "departamento", "quantidade"]].to_string(index=False))
+
+    # ── flag_demanda_ativa: soma anual por material > 0 ───────────────────────
+    soma_anual = (
+        df.groupby("material")["quantidade"]
+        .sum()
+        .rename("_soma_anual")
+    )
+    df = df.join(soma_anual, on="material")
+    df["flag_demanda_ativa"] = df["_soma_anual"] > 0
+    df = df.drop(columns=["_soma_anual"])
+
+    # ── Relatório ─────────────────────────────────────────────────────────────
+    n_ativos   = df[df["flag_demanda_ativa"]]["material"].nunique()
+    n_inativos = df[~df["flag_demanda_ativa"]]["material"].nunique()
+    print(f"  Fonte              : {caminho}")
+    print(f"  Registros lidos    : {len(df)}")
+    print(f"  Materiais ativos   : {n_ativos}  (soma anual > 0)")
+    print(f"  Materiais inativos : {n_inativos}  (soma anual = 0 — mantidos no MRP sem geração de pedidos)")
+    if n_inativos > 0:
+        mats = sorted(df[~df["flag_demanda_ativa"]]["material"].unique())
+        print(f"    └─ {', '.join(map(str, mats))}")
+
+    return df[[
+        "material", "mes", "departamento", "programa_orcamentario",
+        "quantidade", "flag_demanda_ativa"
+    ]]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PASSO 1-2: LER E CONSOLIDAR DEMANDA
 # ─────────────────────────────────────────────────────────────────────────────
 def passo_1_2_demanda() -> pd.DataFrame:
     separador("PASSO 1-2 │ LER E CONSOLIDAR DEMANDA")
 
-    df = pd.read_csv(os.path.join(DIR_DADOS, "demanda.csv"))
-    df["mes"] = pd.to_datetime(df["mes"], format="%Y-%m").dt.to_period("M").astype(str)
+    # ── Roteamento: formato bruto DTM  vs  demanda.csv padrão ────────────────
+    caminho_raw = (
+        os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW)
+        if ARQUIVO_DEMANDA_RAW
+        else None
+    )
 
+    if caminho_raw and os.path.exists(caminho_raw):
+        # Fonte: arquivo bruto DTM — aplica mapeamento e normalização
+        df_raw = transformar_demanda_dtm(caminho_raw)
+        df = df_raw[["material", "mes", "quantidade"]].copy()
+        separador()
+    else:
+        # Fonte: demanda.csv já no formato padrão material|mes|quantidade
+        df = pd.read_csv(os.path.join(DIR_DADOS, "demanda.csv"))
+        df["mes"] = pd.to_datetime(df["mes"], format="%Y-%m").dt.to_period("M").astype(str)
+
+    # ── Consolidação final (agrupa caso haja duplicidades de chave) ───────────
     demanda = df.groupby(["material", "mes"], as_index=False)["quantidade"].sum()
 
     print(f"  Materiais com demanda : {demanda['material'].nunique()}")
