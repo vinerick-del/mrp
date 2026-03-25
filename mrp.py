@@ -198,11 +198,21 @@ def ler_remessas_sap(source) -> tuple:
     else:
         df["mes_pedido"] = None  # não disponível neste formato
 
-    # Preço líquido → valor unitário do pedido SAP
+    # Preço líquido → valor unitário REAL por unidade
+    # SAP armazena preço por "Unidade preço" (pode ser 1, 100, 1000…)
+    # Fórmula correta: valor_unitario = Preço líquido / Unidade preço
     if "Preço líquido" in df.columns:
-        df["valor_unitario_pedido"] = df["Preço líquido"].apply(br_to_float)
+        preco_raw    = df["Preço líquido"].apply(br_to_float)
+        unidade_preco = pd.to_numeric(
+            df.get("Unidade preço", pd.Series(1, index=df.index)),
+            errors="coerce",
+        ).fillna(1).replace(0, 1)
+        df["valor_unitario_pedido"] = preco_raw / unidade_preco
     elif "Valor líquido pedido" in df.columns:
-        df["valor_unitario_pedido"] = df["Valor líquido pedido"].apply(br_to_float) / df["quantidade"].replace(0, 1)
+        # Fallback: valor total do pedido — convertemos para unitário após
+        # ter a quantidade; guardamos o total e dividimos mais abaixo
+        df["_valor_total_raw"] = df["Valor líquido pedido"].apply(br_to_float)
+        df["valor_unitario_pedido"] = None  # será preenchido após converter qtd
     else:
         df["valor_unitario_pedido"] = 0.0
 
@@ -213,6 +223,12 @@ def ler_remessas_sap(source) -> tuple:
 
     # ── Converter quantidade (formato BR) ─────────────────────────────────────
     df["quantidade"] = df["_qtd_raw"].apply(br_to_float)
+
+    # Finalizar fallback "Valor líquido pedido" agora que quantidade existe
+    if "_valor_total_raw" in df.columns:
+        df["valor_unitario_pedido"] = (
+            df["_valor_total_raw"] / df["quantidade"].replace(0, 1)
+        )
 
     # ── Filtro 2: eliminar quantidade == 0 ────────────────────────────────────
     antes = len(df)
@@ -863,8 +879,18 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
         df["mes_pedido"] = pd.to_datetime(df["data_pedido"], errors="coerce").dt.to_period("M").astype(str)
     else:
         df["mes_pedido"] = None
-    if "valor_unitario" in df.columns:
-        df["valor_unitario_pedido"] = pd.to_numeric(df["valor_unitario"], errors="coerce").fillna(0.0)
+
+    # Preço: tenta "Preço líquido" (SAP) com br_to_float e divisão por "Unidade preço"
+    # Depois tenta coluna já normalizada "valor_unitario"; fallback = 0
+    if "Preço líquido" in df.columns:
+        preco_raw     = df["Preço líquido"].apply(br_to_float)
+        unidade_preco = pd.to_numeric(
+            df.get("Unidade preço", pd.Series(1, index=df.index)),
+            errors="coerce",
+        ).fillna(1).replace(0, 1)
+        df["valor_unitario_pedido"] = preco_raw / unidade_preco
+    elif "valor_unitario" in df.columns:
+        df["valor_unitario_pedido"] = df["valor_unitario"].apply(br_to_float)
     else:
         df["valor_unitario_pedido"] = 0.0
 
