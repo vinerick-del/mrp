@@ -310,6 +310,8 @@ if "resultado" in st.session_state:
         sel  = st.multiselect("Filtrar material(is)", mats, default=mats[:5] if len(mats) > 5 else mats)
         df_show = df_mrp_val[df_mrp_val["material"].isin(sel)] if sel else df_mrp_val
 
+        n_cells = df_show.shape[0] * df_show.shape[1]
+        pd.set_option("styler.render.max_elements", max(n_cells, 262144))
         st.dataframe(
             df_show.style.applymap(
                 lambda v: "background-color: #ffcccc" if isinstance(v, (int, float)) and v < 0 else "",
@@ -347,6 +349,8 @@ if "resultado" in st.session_state:
         pivot = _build_projecao_pivot(df_mrp)
         date_cols = [c for c in pivot.columns if c not in ("material", "classe", "Saldo Final")]
 
+        n_cells_piv = pivot.shape[0] * pivot.shape[1]
+        pd.set_option("styler.render.max_elements", max(n_cells_piv, 262144))
         st.dataframe(
             pivot.style.applymap(
                 lambda v: "background-color: #ffcccc" if isinstance(v, (int, float)) and v < 0 else "",
