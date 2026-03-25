@@ -192,7 +192,7 @@ if btn_processar:
 
             # ── Carregar materiais (legado — necessário para ABC fallback) ────
             mat_path = os.path.join(DIR_DADOS, "materiais.csv")
-            materiais = pd.read_csv(mat_path, encoding="latin-1", sep=";") if os.path.exists(mat_path) else pd.DataFrame(
+            materiais = pd.read_csv(mat_path, encoding="latin-1", sep=",") if os.path.exists(mat_path) else pd.DataFrame(
                 columns=["material", "descricao", "valor_unitario"]
             )
 

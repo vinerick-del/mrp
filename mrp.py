@@ -684,7 +684,7 @@ def passo_1_2_demanda() -> pd.DataFrame:
         separador()
     else:
         # Fonte: demanda.csv já no formato padrão material|mes|quantidade
-        df = pd.read_csv(os.path.join(DIR_DADOS, "demanda.csv"), encoding="latin-1", sep=";")
+        df = pd.read_csv(os.path.join(DIR_DADOS, "demanda.csv"), encoding="latin-1", sep=",")
         df["mes"] = pd.to_datetime(df["mes"], format="%Y-%m").dt.to_period("M").astype(str)
 
     # ── Consolidação final (agrupa caso haja duplicidades de chave) ───────────
@@ -709,7 +709,7 @@ def passo_3_estoque() -> pd.DataFrame:
         salvar(consolidado, "01_estoque_consolidado.csv")
         return consolidado
 
-    df = pd.read_csv(os.path.join(DIR_DADOS, "estoque.csv"), encoding="latin-1", sep=";")
+    df = pd.read_csv(os.path.join(DIR_DADOS, "estoque.csv"), encoding="latin-1", sep=",")
     print(f"  Linhas de endereçamento: {len(df)}")
 
     consolidado = (
@@ -1359,7 +1359,7 @@ def main() -> None:
     os.makedirs(DIR_SAIDA, exist_ok=True)
 
     # ── Carregar arquivos auxiliares (SAP novos + legado) ─────────────────────
-    materiais = pd.read_csv(os.path.join(DIR_DADOS, "materiais.csv"), encoding="latin-1", sep=";")
+    materiais = pd.read_csv(os.path.join(DIR_DADOS, "materiais.csv"), encoding="latin-1", sep=",")
 
     # Contratos SAP (opcional — enriquece preços para ABC)
     contratos_path = os.path.join(DIR_DADOS, ARQ_CONTRATOS_SAP)
