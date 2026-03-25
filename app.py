@@ -164,25 +164,31 @@ if btn_processar:
             os.makedirs(DIR_SAIDA, exist_ok=True)
 
             # ── Salvar arquivos enviados pelo usuário (se houver) ─────────────
-            if f_demanda:
-                with open(os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW), "wb") as fh:
-                    fh.write(f_demanda.read())
-            if f_remessas:
-                path = os.path.join(DIR_DADOS, "remessas_sap.csv")
-                with open(path, "wb") as fh:
-                    fh.write(f_remessas.read())
-            if f_estoque:
-                path = os.path.join(DIR_DADOS, "estoque_sap.csv")
-                with open(path, "wb") as fh:
-                    fh.write(f_estoque.read())
-            if f_contratos:
-                path = os.path.join(DIR_DADOS, "contratos_sap.csv")
-                with open(path, "wb") as fh:
-                    fh.write(f_contratos.read())
-            if f_lead:
-                path = os.path.join(DIR_DADOS, "lead_times.csv")
-                with open(path, "wb") as fh:
-                    fh.write(f_lead.read())
+            def _salvar_upload(uploaded, nome_arquivo):
+                """Salva o arquivo enviado em DIR_DADOS. Retorna True em sucesso."""
+                if not uploaded:
+                    return True
+                path = os.path.join(DIR_DADOS, nome_arquivo)
+                try:
+                    with open(path, "wb") as fh:
+                        fh.write(uploaded.read())
+                    return True
+                except PermissionError:
+                    st.error(
+                        f"Sem permissão para salvar **{nome_arquivo}**. "
+                        "Feche o arquivo no Excel (ou outro programa) e tente novamente."
+                    )
+                    return False
+
+            ok = all([
+                _salvar_upload(f_demanda,   ARQUIVO_DEMANDA_RAW),
+                _salvar_upload(f_remessas,  "remessas_sap.csv"),
+                _salvar_upload(f_estoque,   "estoque_sap.csv"),
+                _salvar_upload(f_contratos, "contratos_sap.csv"),
+                _salvar_upload(f_lead,      "lead_times.csv"),
+            ])
+            if not ok:
+                st.stop()
 
             # ── Carregar materiais (legado — necessário para ABC fallback) ────
             mat_path = os.path.join(DIR_DADOS, "materiais.csv")
