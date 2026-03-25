@@ -560,7 +560,11 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
     else:
         raise ValueError(f"Não foi possível decodificar {caminho} com utf-8-sig / latin-1 / cp1252.")
 
-    # ── Mapeamento oficial de colunas ─────────────────────────────────────────
+    # ── Normaliza nomes de colunas (remove espaços, BOM residual) ─────────────
+    df.columns = df.columns.str.strip()
+    print(f"  ℹ  Colunas detectadas: {list(df.columns)}")
+
+    # ── Mapeamento oficial de colunas + aliases comuns ─────────────────────────
     col_map = {
         "CÓDIGO" : "material",
         "MÊS"    : "_mes_raw",
@@ -568,9 +572,35 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
         "PROJETO": "programa_orcamentario",
         "QTD"    : "quantidade",
     }
+    aliases = {
+        "CODIGO"       : "CÓDIGO",
+        "COD"          : "CÓDIGO",
+        "MATERIAL"     : "CÓDIGO",
+        "MES"          : "MÊS",
+        "DATA"         : "MÊS",
+        "DEP"          : "DEP.",
+        "DEPTO"        : "DEP.",
+        "DEPARTAMENTO" : "DEP.",
+        "QUANTIDADE"   : "QTD",
+        "QTDE"         : "QTD",
+        "PROG"         : "PROJETO",
+        "PROGRAMA"     : "PROJETO",
+    }
+    # Renomeia colunas usando aliases (case-insensitive)
+    rename_alias = {}
+    for col in df.columns:
+        upper = col.upper().strip()
+        if upper in aliases and upper not in col_map:
+            rename_alias[col] = aliases[upper]
+    if rename_alias:
+        df = df.rename(columns=rename_alias)
+
     colunas_ausentes = [c for c in col_map if c not in df.columns]
     if colunas_ausentes:
-        raise ValueError(f"Colunas obrigatórias ausentes no arquivo: {colunas_ausentes}")
+        raise ValueError(
+            f"Colunas obrigatórias ausentes no arquivo: {colunas_ausentes}\n"
+            f"Colunas encontradas: {list(df.columns)}"
+        )
 
     df = df.rename(columns=col_map)[[
         "material", "_mes_raw", "departamento", "programa_orcamentario", "quantidade"
