@@ -294,11 +294,21 @@ if "resultado" in st.session_state:
 
     with tab_mrp:
         st.subheader("MRP Projetado")
-        st.caption("material | mes | demanda | entrada | estoque_proj | necessidade")
+        st.caption("material | mes | demanda | entrada | estoque_proj | necessidade | valor_pedido")
 
-        mats = sorted(df_mrp["material"].unique())
+        # Enriquecer com valor_unitario do ABC para calcular valor do pedido gerado
+        abc = r["abc"]
+        df_mrp_val = df_mrp.merge(
+            abc[["material", "valor_unitario"]].drop_duplicates("material"),
+            on="material", how="left",
+        )
+        df_mrp_val["valor_unitario"] = df_mrp_val["valor_unitario"].fillna(0)
+        df_mrp_val["valor_pedido"] = df_mrp_val["pedido_gerado"] * df_mrp_val["valor_unitario"]
+        df_mrp_val = df_mrp_val.drop(columns=["valor_unitario"])
+
+        mats = sorted(df_mrp_val["material"].unique())
         sel  = st.multiselect("Filtrar material(is)", mats, default=mats[:5] if len(mats) > 5 else mats)
-        df_show = df_mrp[df_mrp["material"].isin(sel)] if sel else df_mrp
+        df_show = df_mrp_val[df_mrp_val["material"].isin(sel)] if sel else df_mrp_val
 
         st.dataframe(
             df_show.style.applymap(
@@ -398,7 +408,7 @@ if "resultado" in st.session_state:
     st.subheader("📥 Download")
 
     dfs_excel: dict[str, pd.DataFrame] = {
-        "MRP Projetado"   : df_mrp,
+        "MRP Projetado"   : df_mrp_val,
         "Projeção Mensal" : _build_projecao_pivot(df_mrp),
     }
     if not df_ped.empty:
