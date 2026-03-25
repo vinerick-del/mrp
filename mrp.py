@@ -563,11 +563,12 @@ def ler_historico_mb51(source) -> pd.DataFrame:
     col_mat  = next((c for c in df.columns
                      if c.strip().lower() in ("material", "cod. material", "código material")), None)
     col_val  = next((c for c in df.columns
-                     if c.strip().lower() in ("montante em ml", "montante", "valor",
-                                              "amount in lc", "val.em ml", "valor total",
-                                              "valor em ml")), None)
+                     if c.strip().lower() in ("montante em ml", "montante em mi",
+                                              "montante", "valor", "amount in lc",
+                                              "val.em ml", "valor total", "valor em ml")), None)
     col_qtd  = next((c for c in df.columns
                      if c.strip().lower() in ("quantidade", "qty", "qtd.", "qtd",
+                                              "qtd. um registro", "qtd.um registro",
                                               "quantidade em unidade de entrada")), None)
 
     ausentes = [n for n, c in [("Tipo Mov.", col_mov), ("Data", col_data),
