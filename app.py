@@ -282,12 +282,20 @@ if "resultado" in st.session_state:
     contratos   = r["contratos"]
 
     # ── Métricas resumo ───────────────────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Materiais", df_mrp["material"].nunique())
     c2.metric("Pedidos gerados", len(df_ped),
               delta=f"{int(df_ped['quantidade'].sum()):,} un." if not df_ped.empty else "0")
-    c3.metric("⚠ Rupturas detectadas", len(rup["material"].unique()) if not rup.empty else 0)
-    c4.metric("⚠ Contratos insuficientes", len(cont) if not cont.empty else 0)
+    vol_total = df_ped["valor_total_pedido"].sum() if not df_ped.empty else 0.0
+    if vol_total >= 1_000_000:
+        vol_str = f"R$ {vol_total/1_000_000:.1f}M"
+    elif vol_total >= 1_000:
+        vol_str = f"R$ {vol_total/1_000:.1f}K"
+    else:
+        vol_str = f"R$ {vol_total:,.2f}"
+    c3.metric("Volume financeiro", vol_str)
+    c4.metric("⚠ Rupturas detectadas", len(rup["material"].unique()) if not rup.empty else 0)
+    c5.metric("⚠ Contratos insuficientes", len(cont) if not cont.empty else 0)
 
     st.divider()
 
@@ -377,10 +385,25 @@ if "resultado" in st.session_state:
             c1p, c2p, c3p = st.columns(3)
             for cls, col in zip(["A", "B", "C"], [c1p, c2p, c3p]):
                 sub = df_ped[df_ped["classe"] == cls]
-                col.metric(f"Classe {cls}", f"{len(sub)} pedido(s)",
-                           f"{int(sub['quantidade'].sum()):,} un." if not sub.empty else "0 un.")
+                val = sub["valor_total_pedido"].sum() if not sub.empty else 0.0
+                if val >= 1_000_000:
+                    val_str = f"R$ {val/1_000_000:.1f}M"
+                elif val >= 1_000:
+                    val_str = f"R$ {val/1_000:.1f}K"
+                else:
+                    val_str = f"R$ {val:,.2f}"
+                col.metric(
+                    f"Classe {cls}",
+                    f"{len(sub)} pedido(s)",
+                    delta=f"{int(sub['quantidade'].sum()):,} un. · {val_str}" if not sub.empty else "0 un.",
+                )
 
-            st.dataframe(df_ped, use_container_width=True, height=380)
+            fmt_moeda = {"valor_unitario": "{:,.2f}", "valor_total_pedido": "{:,.2f}"}
+            st.dataframe(
+                df_ped.style.format(fmt_moeda, na_rep="-"),
+                use_container_width=True,
+                height=380,
+            )
 
     with tab_rup:
         st.subheader("Alertas de Ruptura de Estoque")

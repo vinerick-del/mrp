@@ -987,6 +987,7 @@ def passos_6_11_mrp(
     classe_map  = dict(zip(abc["material"], abc["classe"]))
     estoque_map = dict(zip(estoque["material"], estoque["estoque_total"]))
     desc_map    = dict(zip(materiais["material"], materiais["descricao"]))
+    preco_map   = dict(zip(abc["material"], abc["valor_unitario"]))
 
     todos_mats = sorted(set(estoque["material"]) | set(demanda["material"]))
 
@@ -1093,6 +1094,8 @@ def passos_6_11_mrp(
                         "data_chegada"       : data_cheg.strftime("%d/%m/%Y"),
                         "periodo_entrega"    : per_entrega,
                         "quantidade"         : pedido,
+                        "valor_unitario"     : preco_map.get(mat, 0.0),
+                        "valor_total_pedido" : pedido * preco_map.get(mat, 0.0),
                     }
                 )
 
@@ -1120,7 +1123,7 @@ def passos_6_11_mrp(
         else pd.DataFrame(
             columns=["material", "descricao", "classe", "periodo_necessidade",
                      "data_pedido", "lead_time_dias", "data_chegada",
-                     "periodo_entrega", "quantidade"]
+                     "periodo_entrega", "quantidade", "valor_unitario", "valor_total_pedido"]
         )
     )
 
