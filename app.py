@@ -309,13 +309,10 @@ if "resultado" in st.session_state:
             height=420,
         )
 
-    with tab_proj:
-        st.subheader("Projeção Mensal de Estoque por Material")
-        st.caption("Estoque projetado (un.) ao final de cada mês · última coluna = saldo final do horizonte")
-
-        # Pivot: linhas = material+classe, colunas = meses ordenados
-        pivot = (
-            df_mrp.pivot_table(
+    # ── Helper: pivot projeção mensal (reutilizado na tela e no Excel) ──────────
+    def _build_projecao_pivot(df: pd.DataFrame) -> pd.DataFrame:
+        piv = (
+            df.pivot_table(
                 index=["material", "classe"],
                 columns="mes",
                 values="estoque_proj",
@@ -323,18 +320,27 @@ if "resultado" in st.session_state:
             )
             .reset_index()
         )
-        # Garantir colunas de mês em ordem cronológica
-        mes_cols = sorted([c for c in pivot.columns if c not in ("material", "classe")])
-        pivot = pivot[["material", "classe"] + mes_cols]
+        # Converter colunas "YYYY-MM" para datetime do 1º dia do mês
+        mes_str = sorted([c for c in piv.columns if c not in ("material", "classe")])
+        rename_map = {m: pd.to_datetime(m + "-01") for m in mes_str}
+        piv = piv.rename(columns=rename_map)
+        date_cols = [rename_map[m] for m in mes_str]
+        piv = piv[["material", "classe"] + date_cols]
+        if date_cols:
+            piv["Saldo Final"] = piv[date_cols[-1]]
+        return piv
 
-        # Saldo Final = último mês do horizonte
-        if mes_cols:
-            pivot["Saldo Final"] = pivot[mes_cols[-1]]
+    with tab_proj:
+        st.subheader("Projeção Mensal de Estoque por Material")
+        st.caption("Estoque projetado (un.) ao final de cada mês · última coluna = saldo final do horizonte")
+
+        pivot = _build_projecao_pivot(df_mrp)
+        date_cols = [c for c in pivot.columns if c not in ("material", "classe", "Saldo Final")]
 
         st.dataframe(
             pivot.style.applymap(
                 lambda v: "background-color: #ffcccc" if isinstance(v, (int, float)) and v < 0 else "",
-                subset=mes_cols + (["Saldo Final"] if mes_cols else []),
+                subset=date_cols + (["Saldo Final"] if date_cols else []),
             ),
             use_container_width=True,
             height=450,
@@ -391,24 +397,9 @@ if "resultado" in st.session_state:
     st.divider()
     st.subheader("📥 Download")
 
-    # Montar pivot para Excel (igual ao da aba Projeção Mensal)
-    _pivot_excel = (
-        df_mrp.pivot_table(
-            index=["material", "classe"],
-            columns="mes",
-            values="estoque_proj",
-            aggfunc="sum",
-        )
-        .reset_index()
-    )
-    _mes_cols_excel = sorted([c for c in _pivot_excel.columns if c not in ("material", "classe")])
-    _pivot_excel = _pivot_excel[["material", "classe"] + _mes_cols_excel]
-    if _mes_cols_excel:
-        _pivot_excel["Saldo Final"] = _pivot_excel[_mes_cols_excel[-1]]
-
     dfs_excel: dict[str, pd.DataFrame] = {
         "MRP Projetado"   : df_mrp,
-        "Projeção Mensal" : _pivot_excel,
+        "Projeção Mensal" : _build_projecao_pivot(df_mrp),
     }
     if not df_ped.empty:
         dfs_excel["Pedidos"] = df_ped
