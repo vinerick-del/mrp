@@ -1001,15 +1001,22 @@ def passos_6_11_mrp(
 
         novas_ent: dict[str, float] = {p: 0.0 for p in periodos}
 
+        # Limitar janela de SS ao último mês com demanda cadastrada para este material.
+        # Garante estoque zero no final do horizonte de demanda conhecido (ex.: dez/2026)
+        # sem antecipar pedidos para anos sem previsão. Quando 2027 for carregado,
+        # o comportamento volta ao normal automaticamente.
+        meses_com_dem = [p for p in periodos if dem_mat.get(p, 0.0) > 0]
+        idx_fim_dem   = periodos.index(max(meses_com_dem)) if meses_com_dem else 0
+
         est_proj = est_ini
 
         for i, per in enumerate(periodos):
             dem = dem_mat.get(per, 0.0)
 
-            # ── Estoque de segurança — sempre 3 meses rolling (exibição/relatório)
+            # ── Estoque de segurança — rolling, limitado ao último mês com demanda
             ss_display = sum(
                 dem_mat.get(periodos[j], 0.0)
-                for j in range(i, min(i + MESES_COBERTURA_SS, n_per))
+                for j in range(i, min(i + MESES_COBERTURA_SS, idx_fim_dem + 1))
             )
 
             # ── Entradas deste mês ────────────────────────────────────────────
@@ -1031,7 +1038,7 @@ def passos_6_11_mrp(
                 if est_proj < dem:
                     ss_ordem = sum(
                         dem_mat.get(periodos[j], 0.0)
-                        for j in range(i, min(i + CLASSE_C_COBERTURA_MESES, n_per))
+                        for j in range(i, min(i + CLASSE_C_COBERTURA_MESES, idx_fim_dem + 1))
                     )
                     nec = max(0.0, ss_ordem - est_proj)
             else:
