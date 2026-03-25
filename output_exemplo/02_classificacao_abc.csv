@@ -1,0 +1,4 @@
+﻿material,demanda_total,valor_unitario,valor_total,pct_individual,pct_acumulado,classe
+MAT002,230,25.0,5750.0,68.82,68.82,A
+MAT003,120,15.0,1800.0,21.54,90.37,B
+MAT001,1610,0.5,805.0,9.63,100.0,C
