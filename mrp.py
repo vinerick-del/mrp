@@ -255,7 +255,7 @@ def ler_estoque_sap(source) -> pd.DataFrame:
     if hasattr(source, "read"):
         raw = source.read()
         if isinstance(raw, bytes):
-            for enc in ["utf-8-sig", "latin-1", "cp1252"]:
+            for enc in ["utf-8-sig", "cp1252", "latin-1", "utf-8"]:
                 try:
                     raw = raw.decode(enc)
                     break
@@ -263,8 +263,18 @@ def ler_estoque_sap(source) -> pd.DataFrame:
                     continue
         linhas = raw.splitlines()
     else:
-        with open(source, encoding="utf-8-sig", errors="replace") as fh:
-            linhas = fh.read().splitlines()
+        raw = None
+        for enc in ["utf-8-sig", "cp1252", "latin-1", "utf-8"]:
+            try:
+                with open(source, encoding=enc) as fh:
+                    raw = fh.read()
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if raw is None:
+            with open(source, encoding="utf-8-sig", errors="replace") as fh:
+                raw = fh.read()
+        linhas = raw.splitlines()
 
     # Encontrar linha de cabeçalho (contém 'Produto')
     header_idx = None
@@ -275,7 +285,11 @@ def ler_estoque_sap(source) -> pd.DataFrame:
     if header_idx is None:
         raise ValueError("Coluna 'Produto' não encontrada no arquivo de estoque SAP.")
 
-    header_fields = linhas[header_idx].split("\t")
+    # Detectar separador automaticamente: tab ou ponto-e-vírgula
+    header_line = linhas[header_idx]
+    sep = "\t" if "\t" in header_line else ";"
+
+    header_fields = header_line.split(sep)
     n_cols = len(header_fields)
 
     # Normalizar linhas de dados: BLIN tem 1 coluna extra no início → remover
@@ -283,7 +297,7 @@ def ler_estoque_sap(source) -> pd.DataFrame:
     for ln in linhas[header_idx + 1:]:
         if not ln.strip():
             continue
-        fields = ln.split("\t")
+        fields = ln.split(sep)
         if len(fields) == n_cols + 1 and fields[0].strip().upper() == "BLIN":
             fields = fields[1:]          # remove a coluna extra de BLIN
         # Padding / truncate para n_cols
