@@ -28,6 +28,7 @@ from mrp import (
     ler_estoque_sap,
     ler_contratos_sap,
     ler_lead_times,
+    ler_materiais,
     derivar_rateio_da_demanda,
     transformar_demanda_dtm,
     ARQUIVO_DEMANDA_RAW,
@@ -192,7 +193,7 @@ if btn_processar:
 
             # ── Carregar materiais (legado — necessário para ABC fallback) ────
             mat_path = os.path.join(DIR_DADOS, "materiais.csv")
-            materiais = pd.read_csv(mat_path, encoding="latin-1", sep=",") if os.path.exists(mat_path) else pd.DataFrame(
+            materiais = ler_materiais(mat_path) if os.path.exists(mat_path) else pd.DataFrame(
                 columns=["material", "descricao", "valor_unitario"]
             )
 

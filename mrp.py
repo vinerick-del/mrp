@@ -54,14 +54,14 @@ DIR_SAIDA = "output"
 # Arquivo de demanda bruta no formato DTM (dd/mm/yyyy).
 # Quando definido e o arquivo existir, substitui demanda.csv como fonte de demanda.
 # Definir como None para usar demanda.csv diretamente.
-ARQUIVO_DEMANDA_RAW = "demanda_dtm_raw.csv"
+ARQUIVO_DEMANDA_RAW = "demanda.csv"
 
 # ── Nomes convencionais dos arquivos SAP (usados pelo main() em modo CLI) ──────
 # Quando os arquivos existirem em DIR_DADOS, os parsers SAP são ativados
 # automaticamente; caso contrário, o fluxo legado é mantido.
-ARQ_REMESSAS_SAP  = "remessas_sap.csv"    # tab-sep exportado do SAP ME2M / ME9F
-ARQ_ESTOQUE_SAP   = "estoque_sap.csv"     # tab-sep exportado do SAP MB52 / MMBE
-ARQ_CONTRATOS_SAP = "contratos_sap.csv"   # tab-sep exportado do SAP ME3M / ME3N
+ARQ_REMESSAS_SAP  = "pedidos_abertos.csv"  # tab-sep exportado do SAP ME2M / ME9F
+ARQ_ESTOQUE_SAP   = "estoque.csv"          # tab-sep exportado do SAP MB52 / MMBE
+ARQ_CONTRATOS_SAP = "Contratos_SAP"        # tab-sep exportado do SAP ME3M / ME3N
 ARQ_LEAD_TIMES    = "lead_times.csv"      # material,lead_time_dias  (CSV simples)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,15 +171,20 @@ def ler_remessas_sap(source) -> tuple:
     df = _ler_sap_tabsep(source)
 
     # ── Mapear colunas obrigatórias ───────────────────────────────────────────
+    # Aceita "Data de remessa" (ME9F) ou "Data do documento" (ME2M) como data
+    col_data = "Data de remessa" if "Data de remessa" in df.columns else "Data do documento"
     col_map = {
-        "Material"                        : "material",
-        "Data de remessa"                 : "_data_raw",
-        "a ser fornecida (quantidade)"    : "_qtd_raw",
-        "Código de eliminação"            : "codigo_eliminacao",
+        "Material"                     : "material",
+        col_data                       : "_data_raw",
+        "a ser fornecida (quantidade)" : "_qtd_raw",
+        "Código de eliminação"         : "codigo_eliminacao",
     }
     ausentes = [c for c in col_map if c not in df.columns]
     if ausentes:
+        print(f"  Colunas encontradas: {list(df.columns)}")
         raise ValueError(f"Colunas obrigatórias ausentes em remessas_sap: {ausentes}")
+    if col_data == "Data do documento":
+        print("  ℹ  Sem 'Data de remessa' — usando 'Data do documento' (pedidos realocados ao mês atual)")
 
     df = df.rename(columns=col_map)
 
@@ -419,6 +424,53 @@ def ler_contratos_sap(source) -> pd.DataFrame:
     return resultado[["material", "data_fim_vigencia", "saldo_contrato", "valor_unitario"]]
 
 
+# ── Parser: Materiais (catálogo de materiais) ──────────────────────────────────
+def ler_materiais(source) -> pd.DataFrame:
+    """
+    Lê arquivo de materiais (TAB ou CSV simples).
+    Suporta dois formatos:
+      - SAP export: CÓDIGO | DESCRIÇÃO | UDM | VALOR UNITÁRIO  (tab-sep, R$ BR)
+      - Legado:     material | descricao | valor_unitario      (CSV simples)
+    Retorna: DataFrame  material | descricao | valor_unitario
+    """
+    df = _ler_sap_tabsep(source)
+    df.columns = df.columns.str.strip()
+
+    col_aliases = {
+        "CÓDIGO"         : "material",
+        "CODIGO"         : "material",
+        "MATERIAL"       : "material",
+        "DESCRIÇÃO"      : "descricao",
+        "DESCRICAO"      : "descricao",
+        "DESCRIÇÃO BREVE": "descricao",
+        "TEXTO BREVE"    : "descricao",
+        "VALOR UNITÁRIO" : "valor_unitario",
+        "VALOR UNITARIO" : "valor_unitario",
+        "PRECO"          : "valor_unitario",
+        "PREÇO"          : "valor_unitario",
+    }
+    rename = {c: col_aliases[c.upper().strip()]
+              for c in df.columns if c.upper().strip() in col_aliases}
+    df = df.rename(columns=rename)
+
+    if "material" not in df.columns:
+        raise ValueError(f"Coluna 'material/CÓDIGO' não encontrada em materiais. Colunas: {list(df.columns)}")
+
+    df["material"] = df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
+    # Normalizar material para código numérico sem zeros à esquerda desnecessários
+    df["material"] = df["material"].astype(str).str.strip()
+
+    if "descricao" not in df.columns:
+        df["descricao"] = ""
+
+    if "valor_unitario" not in df.columns:
+        df["valor_unitario"] = 0.0
+    else:
+        df["valor_unitario"] = df["valor_unitario"].apply(br_to_float)
+
+    return df[["material", "descricao", "valor_unitario"]].drop_duplicates(subset="material")
+
+
 # ── Parser File 5: Lead Times ──────────────────────────────────────────────────
 def ler_lead_times(source) -> dict:
     """
@@ -551,14 +603,8 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
     """
     separador("PRÉ-PROCESSAMENTO │ TRANSFORMAR DEMANDA DTM")
 
-    for _enc in ["utf-8-sig", "latin-1", "cp1252"]:
-        try:
-            df = pd.read_csv(caminho, sep=";", encoding=_enc, dtype=str)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        raise ValueError(f"Não foi possível decodificar {caminho} com utf-8-sig / latin-1 / cp1252.")
+    # Usa o mesmo leitor inteligente dos parsers SAP (detecta sep e encoding)
+    df = _ler_sap_tabsep(caminho)
 
     # ── Normaliza nomes de colunas (remove espaços, BOM residual) ─────────────
     df.columns = df.columns.str.strip()
@@ -583,15 +629,25 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
         "DEPARTAMENTO" : "DEP.",
         "QUANTIDADE"   : "QTD",
         "QTDE"         : "QTD",
+        "QTDE."        : "QTD",
+        "QTD."         : "QTD",
         "PROG"         : "PROJETO",
         "PROGRAMA"     : "PROJETO",
     }
-    # Renomeia colunas usando aliases (case-insensitive)
+    # Renomeia colunas usando aliases (case-insensitive) e normaliza para col_map
+    existing = set(df.columns)
     rename_alias = {}
     for col in df.columns:
         upper = col.upper().strip()
-        if upper in aliases and upper not in col_map:
-            rename_alias[col] = aliases[upper]
+        if upper in col_map and col != upper:
+            # Coluna difere só em maiúsculas/minúsculas → normaliza para a chave do col_map
+            if upper not in existing or col == upper:
+                rename_alias[col] = upper
+        elif upper in aliases:
+            target = aliases[upper]
+            # Só renomeia se o destino ainda não existe (evita duplicatas)
+            if target not in existing:
+                rename_alias[col] = target
     if rename_alias:
         df = df.rename(columns=rename_alias)
 
@@ -1359,7 +1415,7 @@ def main() -> None:
     os.makedirs(DIR_SAIDA, exist_ok=True)
 
     # ── Carregar arquivos auxiliares (SAP novos + legado) ─────────────────────
-    materiais = pd.read_csv(os.path.join(DIR_DADOS, "materiais.csv"), encoding="latin-1", sep=",")
+    materiais = ler_materiais(os.path.join(DIR_DADOS, "materiais.csv"))
 
     # Contratos SAP (opcional — enriquece preços para ABC)
     contratos_path = os.path.join(DIR_DADOS, ARQ_CONTRATOS_SAP)
