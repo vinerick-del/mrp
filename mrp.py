@@ -111,23 +111,39 @@ def br_to_float(s) -> float:
 
 
 def _ler_sap_tabsep(source) -> pd.DataFrame:
-    """Lê arquivo SAP exportado como tab-separated (TXT/CSV).
+    """Lê arquivo SAP exportado como tab-separated ou CSV com ponto-e-vírgula.
     Aceita: path string  OU  file-like object (BytesIO / UploadedFile Streamlit).
     Tenta utf-8-sig → latin-1 → cp1252 em caso de erro de encoding.
+    Tenta \t → ; → , como separador (escolhe o que produz mais colunas).
     """
-    kw = dict(sep="\t", dtype=str, na_values=[""], keep_default_na=False)
     encodings = ["utf-8-sig", "latin-1", "cp1252"]
+    separators = ["\t", ";", ","]
 
+    best = None
     for enc in encodings:
-        try:
-            if hasattr(source, "seek"):
-                source.seek(0)
-            return pd.read_csv(source, encoding=enc, **kw)
-        except UnicodeDecodeError:
-            continue
-        except Exception:
-            raise
-    raise ValueError("Não foi possível decodificar o arquivo SAP com utf-8-sig / latin-1 / cp1252.")
+        for sep in separators:
+            try:
+                if hasattr(source, "seek"):
+                    source.seek(0)
+                df = pd.read_csv(
+                    source, encoding=enc, sep=sep,
+                    dtype=str, na_values=[""], keep_default_na=False,
+                )
+                if best is None or len(df.columns) > len(best.columns):
+                    best = df
+                # Se já encontrou múltiplas colunas com este encoding, não testa outros separadores
+                if len(df.columns) > 1:
+                    break
+            except UnicodeDecodeError:
+                break  # tenta próximo encoding
+            except Exception:
+                continue
+        if best is not None and len(best.columns) > 1:
+            break
+
+    if best is None or best.empty:
+        raise ValueError("Não foi possível ler o arquivo SAP.")
+    return best
 
 
 # ── Parser File 2: Remessas (Delivery Schedule) ───────────────────────────────
@@ -346,6 +362,7 @@ def ler_contratos_sap(source) -> pd.DataFrame:
     }
     ausentes = [c for c in col_map if c not in df.columns]
     if ausentes:
+        print(f"  Colunas encontradas: {list(df.columns)}")
         raise ValueError(f"Colunas obrigatórias ausentes em contratos_sap: {ausentes}")
 
     df = df.rename(columns=col_map)[["material", "_data_raw", "_saldo_raw", "_preco_raw"]]
