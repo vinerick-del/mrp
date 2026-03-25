@@ -539,6 +539,88 @@ def ler_materiais(source) -> pd.DataFrame:
     return df[cols].drop_duplicates(subset="material")
 
 
+# ── Parser File 6: Histórico MB51 (movimentos 101/102) ────────────────────────
+def ler_historico_mb51(source) -> pd.DataFrame:
+    """
+    Lê relatório SAP MB51 e retorna entradas/estornos de fornecedores.
+
+    Filtro: Tipo de Movimento 101 (recebimento) e 102 (estorno).
+    Movimentos 102 ficam com quantidade e valor NEGATIVOS.
+
+    Retorna DataFrame agrupado: material | mes_entrega | quantidade | valor_pedido
+    """
+    df = _ler_sap_tabsep(source)
+    df.columns = df.columns.str.strip()
+
+    # ── Mapear colunas por aliases comuns de exportações SAP ─────────────────
+    col_mov = next((c for c in df.columns
+                    if c.strip().lower() in ("tp.mov.", "mov.", "tipo de movimento",
+                                             "movement type", "mvt", "tp mov")), None)
+    col_data = next((c for c in df.columns
+                     if c.strip().lower() in ("data do doc.", "data de lançamento",
+                                              "posting date", "data doc.", "data do documento",
+                                              "data lanç.")), None)
+    col_mat  = next((c for c in df.columns
+                     if c.strip().lower() in ("material", "cod. material", "código material")), None)
+    col_val  = next((c for c in df.columns
+                     if c.strip().lower() in ("montante em ml", "montante", "valor",
+                                              "amount in lc", "val.em ml", "valor total",
+                                              "valor em ml")), None)
+    col_qtd  = next((c for c in df.columns
+                     if c.strip().lower() in ("quantidade", "qty", "qtd.", "qtd",
+                                              "quantidade em unidade de entrada")), None)
+
+    ausentes = [n for n, c in [("Tipo Mov.", col_mov), ("Data", col_data),
+                                ("Material", col_mat), ("Valor", col_val)] if c is None]
+    if ausentes:
+        raise ValueError(f"ler_historico_mb51: colunas não encontradas: {ausentes}. "
+                         f"Colunas disponíveis: {list(df.columns)}")
+
+    df = df.rename(columns={
+        col_mov : "tipo_mov",
+        col_data: "data_doc",
+        col_mat : "material",
+        col_val : "_valor_raw",
+    })
+    if col_qtd:
+        df = df.rename(columns={col_qtd: "_qtd_raw"})
+    else:
+        df["_qtd_raw"] = "0"
+
+    # ── Filtrar apenas 101 e 102 ──────────────────────────────────────────────
+    df["tipo_mov"] = df["tipo_mov"].astype(str).str.strip()
+    df = df[df["tipo_mov"].isin(["101", "102"])].copy()
+    if df.empty:
+        print("  ⚠ MB51: nenhum movimento 101/102 encontrado.")
+        return pd.DataFrame(columns=["material", "mes_entrega", "quantidade", "valor_pedido"])
+
+    # ── Converter valores e quantidades ──────────────────────────────────────
+    df["valor"]     = df["_valor_raw"].apply(br_to_float)
+    df["quantidade"]= df["_qtd_raw"].apply(br_to_float)
+
+    # ── Garantir sinal negativo nos estornos (102) ────────────────────────────
+    mask_102 = df["tipo_mov"] == "102"
+    df.loc[mask_102, "valor"]      = df.loc[mask_102, "valor"].abs() * -1
+    df.loc[mask_102, "quantidade"] = df.loc[mask_102, "quantidade"].abs() * -1
+
+    # ── Converter data → mês ──────────────────────────────────────────────────
+    df["data_doc"]    = pd.to_datetime(df["data_doc"], format="%d/%m/%Y", errors="coerce")
+    df["mes_entrega"] = df["data_doc"].dt.to_period("M").astype(str)
+    df = df[df["mes_entrega"].notna()].copy()
+
+    # ── Normalizar material ───────────────────────────────────────────────────
+    df["material"] = df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
+
+    # ── Agrupar por material + mês ────────────────────────────────────────────
+    resultado = (
+        df.groupby(["material", "mes_entrega"], as_index=False)
+        .agg(quantidade=("quantidade", "sum"), valor_pedido=("valor", "sum"))
+    )
+    print(f"  MB51 carregado: {len(resultado)} combinações material×mês "
+          f"({df['material'].nunique()} materiais, {df['mes_entrega'].nunique()} meses)")
+    return resultado
+
+
 # ── Parser File 5: Lead Times ──────────────────────────────────────────────────
 def ler_lead_times(source) -> dict:
     """

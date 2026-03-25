@@ -29,6 +29,7 @@ from mrp import (
     ler_contratos_sap,
     ler_lead_times,
     ler_materiais,
+    ler_historico_mb51,
     derivar_rateio_da_demanda,
     transformar_demanda_dtm,
     ARQUIVO_DEMANDA_RAW,
@@ -144,6 +145,8 @@ with st.sidebar:
                                    help="Exportação MM60 / MM03 — CÓDIGO | DESCRIÇÃO | VALOR UNITÁRIO")
     f_lead      = st.file_uploader("⑥ Lead Times (opcional)", type=["csv"],
                                    help="CSV simples: material,lead_time_dias")
+    f_mb51      = st.file_uploader("⑦ Histórico MB51 (Entradas 101/102)", type=["csv", "txt"],
+                                   help="Relatório MB51 — movimentos 101 (recebimento) e 102 (estorno)")
 
     st.divider()
     usar_dados_demo = st.checkbox("Usar dados existentes em data/", value=True,
@@ -190,6 +193,7 @@ if btn_processar:
                 _salvar_upload(f_contratos, "contratos_sap.csv"),
                 _salvar_upload(f_materiais, "materiais.csv"),
                 _salvar_upload(f_lead,      "lead_times.csv"),
+                _salvar_upload(f_mb51,      "historico_mb51.csv"),
             ])
             if not ok:
                 st.stop()
@@ -237,6 +241,10 @@ if btn_processar:
             )
             df_rateio = passo_12_rateio(df_ped, df_abertos_fut, demanda_detail=demanda_detail)
 
+            # ── Histórico MB51 (opcional) ─────────────────────────────────────
+            mb51_path = os.path.join(DIR_DADOS, "historico_mb51.csv")
+            df_mb51 = ler_historico_mb51(mb51_path) if os.path.exists(mb51_path) else pd.DataFrame()
+
             # Alertas
             alertas_rup, alertas_cont = _calcular_alertas(df_mrp, df_ped, contratos)
 
@@ -253,6 +261,7 @@ if btn_processar:
                 "mrp"           : df_mrp_out,
                 "pedidos"       : df_ped,
                 "abertos_fut"   : df_abertos_fut,
+                "historico_mb51": df_mb51,
                 "rateio"        : df_rateio,
                 "alertas_rup"   : alertas_rup,
                 "alertas_cont"  : alertas_cont,
@@ -278,6 +287,7 @@ if "resultado" in st.session_state:
     df_mrp        = r["mrp"]
     df_ped        = r["pedidos"]
     df_abertos_fut= r.get("abertos_fut", pd.DataFrame())
+    df_mb51       = r.get("historico_mb51", pd.DataFrame())
     df_rateio     = r["rateio"]
     rup           = r["alertas_rup"]
     cont          = r["alertas_cont"]
@@ -444,7 +454,15 @@ if "resultado" in st.session_state:
             tmp2["valor_pedido"]= tmp2["valor_total_pedido"].fillna(0)
             linhas_sap = [tmp2[["origem", "material", "quantidade", "valor_pedido", "mes_pedido", "mes_entrega"]]]
 
-        todas = linhas_mrp + linhas_sap
+        # ── Histórico realizado MB51 ──────────────────────────────────────────
+        linhas_mb51 = []
+        if not df_mb51.empty:
+            tmp3 = df_mb51.copy()
+            tmp3["mes_pedido"] = "Realizado no Passado"
+            tmp3["origem"]     = "Histórico Recebido (MB51)"
+            linhas_mb51 = [tmp3[["origem", "material", "quantidade", "valor_pedido", "mes_pedido", "mes_entrega"]]]
+
+        todas = linhas_mrp + linhas_sap + linhas_mb51
         if not todas:
             st.info("Nenhum dado financeiro disponível.")
         else:
