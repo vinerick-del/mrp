@@ -298,12 +298,22 @@ def ler_estoque_sap(source) -> pd.DataFrame:
     col_qtd  = "Qtd.disponível UMB"
 
     if col_qtd not in df.columns:
-        # Tentar variante sem acento
-        candidatas = [c for c in df.columns if "disponível" in c or "disponivel" in c.lower()]
+        # Tentar variantes conhecidas do SAP (idioma PT/EN, com/sem acento)
+        _termos = ["disponív", "disponiv", "available", "livre utiliz", "unrestricted",
+                   "estoque disp", "stock avail", "livre", "qty avail"]
+        candidatas = [
+            c for c in df.columns
+            if any(t in c.lower() for t in _termos)
+        ]
         if candidatas:
             col_qtd = candidatas[0]
         else:
-            raise ValueError(f"Coluna '{col_qtd}' não encontrada no arquivo de estoque SAP.")
+            colunas_encontradas = list(df.columns)
+            raise ValueError(
+                f"Coluna de quantidade disponível não encontrada no arquivo de estoque SAP.\n"
+                f"Colunas encontradas: {colunas_encontradas}\n"
+                f"Renomeie a coluna de estoque para 'Qtd.disponível UMB' ou informe o nome correto."
+            )
 
     df = df[[col_prod, col_qtd]].rename(
         columns={col_prod: "material", col_qtd: "_qtd_raw"}
