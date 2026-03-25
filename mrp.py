@@ -551,7 +551,14 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
     """
     separador("PRÉ-PROCESSAMENTO │ TRANSFORMAR DEMANDA DTM")
 
-    df = pd.read_csv(caminho, sep=";", encoding="utf-8-sig", dtype=str)
+    for _enc in ["utf-8-sig", "latin-1", "cp1252"]:
+        try:
+            df = pd.read_csv(caminho, sep=";", encoding=_enc, dtype=str)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError(f"Não foi possível decodificar {caminho} com utf-8-sig / latin-1 / cp1252.")
 
     # ── Mapeamento oficial de colunas ─────────────────────────────────────────
     col_map = {
