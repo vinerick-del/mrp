@@ -1008,10 +1008,6 @@ def passos_6_11_mrp(
         meses_com_dem = [p for p in periodos if dem_mat.get(p, 0.0) > 0]
         idx_fim_dem   = periodos.index(max(meses_com_dem)) if meses_com_dem else 0
 
-        # horizonte_finito = demanda não cobre todo o horizonte de planejamento
-        # → pedidos dimensionados para zerar estoque no último mês com demanda
-        horizonte_finito = idx_fim_dem < n_per - 1
-
         est_proj = est_ini
 
         for i, per in enumerate(periodos):
@@ -1030,17 +1026,7 @@ def passos_6_11_mrp(
             per_entrega = ""
             nec         = 0.0
 
-            if horizonte_finito and i <= idx_fim_dem:
-                # Modo "período firme finito": zerar estoque no fim da demanda conhecida.
-                # nec = demanda restante − (estoque atual + entradas futuras já planejadas)
-                # Evita duplo pedido: leva em conta tudo que já está no pipeline.
-                supply_total     = est_proj + sum(novas_ent.get(periodos[k], 0.0)
-                                                  for k in range(i + 1, idx_fim_dem + 1))
-                demanda_restante = sum(dem_mat.get(periodos[j], 0.0)
-                                       for j in range(i, idx_fim_dem + 1))
-                nec              = max(0.0, demanda_restante - supply_total)
-                ss_display       = demanda_restante  # para exibição/relatório
-            elif classe == "C":
+            if classe == "C":
                 # Trigger: cobertura < 1 mês (risco de ruptura)
                 # Ao pedir: cobrir os próximos CLASSE_C_COBERTURA_MESES meses
                 ss_display = sum(
@@ -1052,14 +1038,27 @@ def passos_6_11_mrp(
                         dem_mat.get(periodos[j], 0.0)
                         for j in range(i, min(i + CLASSE_C_COBERTURA_MESES, n_per))
                     )
-                    nec = max(0.0, ss_ordem - est_proj)
+                    nec_ideal = max(0.0, ss_ordem - est_proj)
+                else:
+                    nec_ideal = 0.0
             else:
                 # Classes A e B: trigger quando est_proj < SS de 3 meses
                 ss_display = sum(
                     dem_mat.get(periodos[j], 0.0)
                     for j in range(i, min(i + MESES_COBERTURA_SS, n_per))
                 )
-                nec = max(0.0, ss_display - est_proj)
+                nec_ideal = max(0.0, ss_display - est_proj)
+
+            # ── Teto Phase-Out: nunca pedir além da demanda restante conhecida ─
+            # Impede sobra de estoque quando não há demanda no ano seguinte.
+            # Se o estoque + pipeline já cobre tudo, teto = 0 → nenhum pedido.
+            demanda_restante = sum(dem_mat.get(periodos[j], 0.0)
+                                   for j in range(i, idx_fim_dem + 1))
+            entradas_futuras = sum(novas_ent.get(periodos[k], 0.0)
+                                   for k in range(i + 1, idx_fim_dem + 1))
+            teto_pedido = max(0.0, demanda_restante - est_proj - entradas_futuras)
+
+            nec = min(nec_ideal, teto_pedido)
 
             if nec > 0:
                 pedido = math.ceil(nec)
