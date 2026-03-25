@@ -59,7 +59,7 @@ ARQUIVO_DEMANDA_RAW = "demanda.csv"
 # ── Nomes convencionais dos arquivos SAP (usados pelo main() em modo CLI) ──────
 # Quando os arquivos existirem em DIR_DADOS, os parsers SAP são ativados
 # automaticamente; caso contrário, o fluxo legado é mantido.
-ARQ_REMESSAS_SAP  = "pedidos_abertos.csv"  # tab-sep exportado do SAP ME2M / ME9F
+ARQ_REMESSAS_SAP  = "REMESSAS_SAP"          # tab-sep exportado do SAP ME2M / ME9F
 ARQ_ESTOQUE_SAP   = "estoque.csv"          # tab-sep exportado do SAP MB52 / MMBE
 ARQ_CONTRATOS_SAP = "Contratos_SAP"        # tab-sep exportado do SAP ME3M / ME3N
 ARQ_LEAD_TIMES    = "lead_times.csv"      # material,lead_time_dias  (CSV simples)
