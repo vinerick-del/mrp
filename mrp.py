@@ -1026,6 +1026,15 @@ def passos_6_11_mrp(
             per_entrega = ""
             nec         = 0.0
 
+            # ── Estoque virtual: posição real de cobertura (evita Panic Buying) ─
+            # Inclui tudo que já está em trânsito (pedidos existentes + MRP),
+            # impedindo que o sistema "tape o mesmo buraco" em meses consecutivos.
+            entradas_em_transito = sum(
+                ent_mat.get(periodos[k], 0.0) + novas_ent.get(periodos[k], 0.0)
+                for k in range(i + 1, n_per)
+            )
+            estoque_virtual = est_proj + entradas_em_transito
+
             if classe == "C":
                 # Trigger: cobertura < 1 mês (risco de ruptura)
                 # Ao pedir: cobrir os próximos CLASSE_C_COBERTURA_MESES meses
@@ -1033,30 +1042,27 @@ def passos_6_11_mrp(
                     dem_mat.get(periodos[j], 0.0)
                     for j in range(i, min(i + MESES_COBERTURA_SS, n_per))
                 )
-                if est_proj < dem:
+                if estoque_virtual < dem:
                     ss_ordem = sum(
                         dem_mat.get(periodos[j], 0.0)
                         for j in range(i, min(i + CLASSE_C_COBERTURA_MESES, n_per))
                     )
-                    nec_ideal = max(0.0, ss_ordem - est_proj)
+                    nec_ideal = max(0.0, ss_ordem - estoque_virtual)
                 else:
                     nec_ideal = 0.0
             else:
-                # Classes A e B: trigger quando est_proj < SS de 3 meses
+                # Classes A e B: trigger quando estoque_virtual < SS de 3 meses
                 ss_display = sum(
                     dem_mat.get(periodos[j], 0.0)
                     for j in range(i, min(i + MESES_COBERTURA_SS, n_per))
                 )
-                nec_ideal = max(0.0, ss_display - est_proj)
+                nec_ideal = max(0.0, ss_display - estoque_virtual)
 
             # ── Teto Phase-Out: nunca pedir além da demanda restante conhecida ─
-            # Impede sobra de estoque quando não há demanda no ano seguinte.
-            # Se o estoque + pipeline já cobre tudo, teto = 0 → nenhum pedido.
-            demanda_restante = sum(dem_mat.get(periodos[j], 0.0)
-                                   for j in range(i, idx_fim_dem + 1))
-            entradas_futuras = sum(novas_ent.get(periodos[k], 0.0)
-                                   for k in range(i + 1, idx_fim_dem + 1))
-            teto_pedido = max(0.0, demanda_restante - est_proj - entradas_futuras)
+            # Se o estoque_virtual já cobre tudo até idx_fim_dem, teto = 0.
+            demanda_restante_ano = sum(dem_mat.get(periodos[j], 0.0)
+                                       for j in range(i, idx_fim_dem + 1))
+            teto_pedido = max(0.0, demanda_restante_ano - estoque_virtual)
 
             nec = min(nec_ideal, teto_pedido)
 
