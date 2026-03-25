@@ -18,6 +18,7 @@ Passos de processamento:
   12. Gerar rateio final por departamento / programa orçamentário
 """
 
+import io
 import math
 import os
 from datetime import date, timedelta
@@ -55,6 +56,14 @@ DIR_SAIDA = "output"
 # Definir como None para usar demanda.csv diretamente.
 ARQUIVO_DEMANDA_RAW = "demanda_dtm_raw.csv"
 
+# ── Nomes convencionais dos arquivos SAP (usados pelo main() em modo CLI) ──────
+# Quando os arquivos existirem em DIR_DADOS, os parsers SAP são ativados
+# automaticamente; caso contrário, o fluxo legado é mantido.
+ARQ_REMESSAS_SAP  = "remessas_sap.csv"    # tab-sep exportado do SAP ME2M / ME9F
+ARQ_ESTOQUE_SAP   = "estoque_sap.csv"     # tab-sep exportado do SAP MB52 / MMBE
+ARQ_CONTRATOS_SAP = "contratos_sap.csv"   # tab-sep exportado do SAP ME3M / ME3N
+ARQ_LEAD_TIMES    = "lead_times.csv"      # material,lead_time_dias  (CSV simples)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # UTILITÁRIOS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,6 +88,383 @@ def salvar(df: pd.DataFrame, nome: str) -> None:
     caminho = os.path.join(DIR_SAIDA, nome)
     df.to_csv(caminho, index=False, encoding="utf-8-sig")
     print(f"  ✓ Salvo → {caminho}  ({len(df)} linhas)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PARSERS SAP — FUNÇÕES NOVAS (adição pura; não alteram nenhum passo existente)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def br_to_float(s) -> float:
+    """Converte número no formato brasileiro ('3.515,50') para float (3515.50).
+    Regra: remove separador de milhar (ponto) e troca decimal (vírgula) por ponto.
+    """
+    if s is None:
+        return 0.0
+    s = str(s).strip()
+    if s in ("", "-", "nan", "NaN"):
+        return 0.0
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _ler_sap_tabsep(source) -> pd.DataFrame:
+    """Lê arquivo SAP exportado como tab-separated (TXT/CSV).
+    Aceita: path string  OU  file-like object (BytesIO / UploadedFile Streamlit).
+    Tenta utf-8-sig → latin-1 → cp1252 em caso de erro de encoding.
+    """
+    kw = dict(sep="\t", dtype=str, na_values=[""], keep_default_na=False)
+    encodings = ["utf-8-sig", "latin-1", "cp1252"]
+
+    for enc in encodings:
+        try:
+            if hasattr(source, "seek"):
+                source.seek(0)
+            return pd.read_csv(source, encoding=enc, **kw)
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            raise
+    raise ValueError("Não foi possível decodificar o arquivo SAP com utf-8-sig / latin-1 / cp1252.")
+
+
+# ── Parser File 2: Remessas (Delivery Schedule) ───────────────────────────────
+def ler_remessas_sap(source) -> tuple:
+    """
+    Lê arquivo SAP de remessas (ME2M / pedidos de compra com datas de entrega).
+
+    Colunas utilizadas:
+      'Material'                  → material
+      'Data de remessa'           → data_remessa  (dd/mm/yyyy)
+      'a ser fornecida (quantidade)' → quantidade  (formato BR)
+      'Código de eliminação'      → codigo_eliminacao
+
+    Regras:
+      • Eliminar linhas com 'Código de eliminação' == 'L'
+      • Eliminar linhas com quantidade == 0
+      • Datas anteriores ao mês atual → realocadas para o mês atual (atraso)
+
+    Retorna: (entradas_consolidadas, df_fut)
+      entradas_consolidadas — material | mes | qtd_entrada   (mesmo contrato de passo_4)
+      df_fut                — linhas originais filtradas com coluna 'mes_remessa'
+    """
+    separador("PARSER SAP │ REMESSAS (File 2)")
+
+    df = _ler_sap_tabsep(source)
+
+    # ── Mapear colunas obrigatórias ───────────────────────────────────────────
+    col_map = {
+        "Material"                        : "material",
+        "Data de remessa"                 : "_data_raw",
+        "a ser fornecida (quantidade)"    : "_qtd_raw",
+        "Código de eliminação"            : "codigo_eliminacao",
+    }
+    ausentes = [c for c in col_map if c not in df.columns]
+    if ausentes:
+        raise ValueError(f"Colunas obrigatórias ausentes em remessas_sap: {ausentes}")
+
+    df = df.rename(columns=col_map)
+
+    # ── Filtro 1: eliminar código 'L' ─────────────────────────────────────────
+    antes = len(df)
+    df = df[df["codigo_eliminacao"].fillna("").str.strip().str.upper() != "L"].copy()
+    print(f"  Filtro código 'L'    : {antes - len(df)} linha(s) removida(s)")
+
+    # ── Converter quantidade (formato BR) ─────────────────────────────────────
+    df["quantidade"] = df["_qtd_raw"].apply(br_to_float)
+
+    # ── Filtro 2: eliminar quantidade == 0 ────────────────────────────────────
+    antes = len(df)
+    df = df[df["quantidade"] > 0].copy()
+    print(f"  Filtro qtd == 0      : {antes - len(df)} linha(s) removida(s)")
+
+    # ── Converter data de remessa ─────────────────────────────────────────────
+    df["data_remessa"] = pd.to_datetime(df["_data_raw"], format="%d/%m/%Y", errors="coerce")
+    invalidas = df["data_remessa"].isna()
+    if invalidas.any():
+        print(f"  ⚠ Datas inválidas    : {invalidas.sum()} — linhas descartadas")
+        df = df[~invalidas].copy()
+
+    df["mes_remessa"] = df["data_remessa"].dt.to_period("M").astype(str)
+
+    # ── Regra de atraso: datas passadas → mês atual ───────────────────────────
+    mes_atual = str(pd.Period(date.today(), "M"))
+    atrasados = df["mes_remessa"] < mes_atual
+    if atrasados.any():
+        print(f"  Realocar atrasados   : {atrasados.sum()} linha(s) → {mes_atual}")
+        df.loc[atrasados, "mes_remessa"] = mes_atual
+
+    df_fut = df[df["mes_remessa"] >= mes_atual].copy()
+
+    print(f"  Remessas após filtros : {len(df_fut)} linha(s)")
+    print(f"  Materiais únicos      : {df_fut['material'].nunique()}")
+
+    entradas = (
+        df_fut.groupby(["material", "mes_remessa"], as_index=False)["quantidade"]
+        .sum()
+        .rename(columns={"mes_remessa": "mes", "quantidade": "qtd_entrada"})
+    )
+    return entradas, df_fut
+
+
+# ── Parser File 3: Estoque (Stock / MB52 / MMBE) ──────────────────────────────
+def ler_estoque_sap(source) -> pd.DataFrame:
+    """
+    Lê arquivo SAP de estoque (MB52 / MMBE multi-depósito).
+
+    Colunas utilizadas:
+      'Produto'             → material  (código limpo, ex: '400011')
+      'Qtd.disponível UMB'  → quantidade (formato BR)
+
+    Tratamento especial:
+      Linhas com depósito BLIN têm uma coluna extra no início, deslocando o layout.
+      A função normaliza essas linhas antes do parsing.
+
+    Regras:
+      • Agrupar por material → somar quantidades
+      • Estoque total negativo → forçar para 0
+
+    Retorna: DataFrame  material | estoque_total
+    """
+    separador("PARSER SAP │ ESTOQUE (File 3)")
+
+    # ── Leitura linha a linha para tratar o offset BLIN ───────────────────────
+    if hasattr(source, "read"):
+        raw = source.read()
+        if isinstance(raw, bytes):
+            for enc in ["utf-8-sig", "latin-1", "cp1252"]:
+                try:
+                    raw = raw.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+        linhas = raw.splitlines()
+    else:
+        with open(source, encoding="utf-8-sig", errors="replace") as fh:
+            linhas = fh.read().splitlines()
+
+    # Encontrar linha de cabeçalho (contém 'Produto')
+    header_idx = None
+    for i, ln in enumerate(linhas):
+        if "Produto" in ln:
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError("Coluna 'Produto' não encontrada no arquivo de estoque SAP.")
+
+    header_fields = linhas[header_idx].split("\t")
+    n_cols = len(header_fields)
+
+    # Normalizar linhas de dados: BLIN tem 1 coluna extra no início → remover
+    rows = []
+    for ln in linhas[header_idx + 1:]:
+        if not ln.strip():
+            continue
+        fields = ln.split("\t")
+        if len(fields) == n_cols + 1 and fields[0].strip().upper() == "BLIN":
+            fields = fields[1:]          # remove a coluna extra de BLIN
+        # Padding / truncate para n_cols
+        while len(fields) < n_cols:
+            fields.append("")
+        rows.append(fields[:n_cols])
+
+    df = pd.DataFrame(rows, columns=header_fields)
+
+    # ── Identificar colunas mapeadas ──────────────────────────────────────────
+    col_prod = "Produto"
+    col_qtd  = "Qtd.disponível UMB"
+
+    if col_qtd not in df.columns:
+        # Tentar variante sem acento
+        candidatas = [c for c in df.columns if "disponível" in c or "disponivel" in c.lower()]
+        if candidatas:
+            col_qtd = candidatas[0]
+        else:
+            raise ValueError(f"Coluna '{col_qtd}' não encontrada no arquivo de estoque SAP.")
+
+    df = df[[col_prod, col_qtd]].rename(
+        columns={col_prod: "material", col_qtd: "_qtd_raw"}
+    )
+
+    # ── Limpar material: remover sufixos (ex: '400011INVT' → ignorar) ─────────
+    # O código limpo é numérico (ou alfanum. sem sufixo de tipo).
+    # Manter apenas linhas onde material é numérico ou tem no máx. 10 caracteres
+    # sem o padrão de sufixo SAP (letras depois de números).
+    df["material"] = df["material"].str.strip()
+    df = df[df["material"].str.match(r"^\d+$", na=False)].copy()  # só códigos numéricos limpos
+
+    df["quantidade"] = df["_qtd_raw"].apply(br_to_float)
+
+    # ── Consolidar por material ───────────────────────────────────────────────
+    consolidado = (
+        df.groupby("material", as_index=False)["quantidade"]
+        .sum()
+        .rename(columns={"quantidade": "estoque_total"})
+    )
+
+    # ── Estoque negativo → 0 ──────────────────────────────────────────────────
+    neg = consolidado["estoque_total"] < 0
+    if neg.any():
+        print(f"  ⚠ Estoque negativo   : {neg.sum()} material(is) → forçado para 0")
+        consolidado.loc[neg, "estoque_total"] = 0
+
+    print(f"  Materiais únicos      : {len(consolidado)}")
+    print(f"  Estoque total (soma)  : {consolidado['estoque_total'].sum():,.0f} un.")
+    return consolidado
+
+
+# ── Parser File 4: Contratos (Framework Agreements) ───────────────────────────
+def ler_contratos_sap(source) -> pd.DataFrame:
+    """
+    Lê arquivo SAP de contratos (ME3M / ME3N / accordos de remessa).
+
+    Colunas utilizadas:
+      'Material'           → material
+      'Fim da validade'    → data_fim_vigencia  (dd/mm/yyyy)
+      'Qtd.prev.pendente'  → saldo_contrato     (formato BR)
+      'Preço líquido'      → valor_unitario     (formato BR)
+
+    Regras:
+      • Extrair preço de TODOS os contratos (inclusive vencidos) para referência ABC
+      • Para saldo: filtrar data_fim_vigencia >= hoje  E  saldo_contrato > 0
+      • Por material: SUM(saldo_contrato), MAX(valor_unitario)
+
+    Retorna: DataFrame  material | data_fim_vigencia | saldo_contrato | valor_unitario
+    """
+    separador("PARSER SAP │ CONTRATOS (File 4)")
+
+    df = _ler_sap_tabsep(source)
+
+    # ── Mapear colunas ────────────────────────────────────────────────────────
+    col_map = {
+        "Material"          : "material",
+        "Fim da validade"   : "_data_raw",
+        "Qtd.prev.pendente" : "_saldo_raw",
+        "Preço líquido"     : "_preco_raw",
+    }
+    ausentes = [c for c in col_map if c not in df.columns]
+    if ausentes:
+        raise ValueError(f"Colunas obrigatórias ausentes em contratos_sap: {ausentes}")
+
+    df = df.rename(columns=col_map)[["material", "_data_raw", "_saldo_raw", "_preco_raw"]]
+    df["material"]       = df["material"].str.strip()
+    df["saldo_contrato"] = df["_saldo_raw"].apply(br_to_float)
+    df["valor_unitario"] = df["_preco_raw"].apply(br_to_float)
+    df["data_fim_vigencia"] = pd.to_datetime(df["_data_raw"], format="%d/%m/%Y", errors="coerce")
+
+    invalidas = df["data_fim_vigencia"].isna()
+    if invalidas.any():
+        print(f"  ⚠ Datas inválidas    : {invalidas.sum()} linha(s) descartadas")
+        df = df[~invalidas].copy()
+
+    hoje = pd.Timestamp(date.today())
+
+    # ── Preço máximo por material (inclui contratos vencidos — referência ABC) ─
+    max_preco = (
+        df.groupby("material", as_index=False)["valor_unitario"]
+        .max()
+        .rename(columns={"valor_unitario": "valor_unitario_max"})
+    )
+
+    # ── Filtrar contratos vigentes com saldo > 0 ──────────────────────────────
+    vigentes = df[(df["data_fim_vigencia"] >= hoje) & (df["saldo_contrato"] > 0)].copy()
+    print(f"  Total de linhas       : {len(df)}")
+    print(f"  Linhas vigentes c/ saldo > 0 : {len(vigentes)}")
+
+    if vigentes.empty:
+        print("  ⚠ Nenhum contrato vigente com saldo > 0")
+        # Retornar tabela só com preço (sem saldo)
+        resultado = max_preco.rename(columns={"valor_unitario_max": "valor_unitario"})
+        resultado["saldo_contrato"] = 0.0
+        resultado["data_fim_vigencia"] = pd.NaT
+        return resultado[["material", "data_fim_vigencia", "saldo_contrato", "valor_unitario"]]
+
+    # ── Somar saldo por material ───────────────────────────────────────────────
+    saldo_total = (
+        vigentes.groupby("material", as_index=False)["saldo_contrato"]
+        .sum()
+    )
+    # Data de vencimento mais próxima (conservador)
+    data_min = (
+        vigentes.groupby("material", as_index=False)["data_fim_vigencia"]
+        .min()
+    )
+
+    resultado = saldo_total.merge(data_min, on="material").merge(max_preco, on="material")
+    resultado = resultado.rename(columns={"valor_unitario_max": "valor_unitario"})
+    resultado["data_fim_vigencia"] = resultado["data_fim_vigencia"].dt.strftime("%d/%m/%Y")
+
+    print(f"  Materiais com saldo   : {len(resultado)}")
+    print(resultado[["material", "data_fim_vigencia", "saldo_contrato", "valor_unitario"]]
+          .to_string(index=False))
+    return resultado[["material", "data_fim_vigencia", "saldo_contrato", "valor_unitario"]]
+
+
+# ── Parser File 5: Lead Times ──────────────────────────────────────────────────
+def ler_lead_times(source) -> dict:
+    """
+    Lê arquivo CSV simples  material,lead_time_dias.
+    Retorna dict  {material_str: lead_time_int}.
+    Materiais ausentes devem usar LEAD_TIME_DIAS (default 60 dias).
+    """
+    separador("PARSER │ LEAD TIMES (File 5)")
+    try:
+        if hasattr(source, "seek"):
+            source.seek(0)
+        df = pd.read_csv(source, dtype=str)
+    except Exception as exc:
+        print(f"  ⚠ Não foi possível ler lead_times: {exc} — usando default {LEAD_TIME_DIAS}d para todos")
+        return {}
+
+    if "material" not in df.columns or "lead_time_dias" not in df.columns:
+        print(f"  ⚠ Colunas esperadas: material, lead_time_dias — usando default para todos")
+        return {}
+
+    df["lead_time_dias"] = pd.to_numeric(df["lead_time_dias"], errors="coerce").fillna(LEAD_TIME_DIAS)
+    lt_dict = {
+        str(row["material"]).strip(): int(row["lead_time_dias"])
+        for _, row in df.iterrows()
+    }
+    print(f"  Lead times carregados : {len(lt_dict)} material(is)")
+    print(f"  Default (ausentes)    : {LEAD_TIME_DIAS} dias")
+    return lt_dict
+
+
+# ── Derivar base de rateio da própria demanda ──────────────────────────────────
+def derivar_rateio_da_demanda(demanda_detail: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcula proporções de rateio por (departamento, programa_orcamentario)
+    a partir do arquivo de demanda DTM, sem usar rateio_base.csv.
+
+    Retorna DataFrame com colunas:
+      material | departamento | programa_orcamentario | proporcao
+    """
+    colunas_req = {"material", "departamento", "programa_orcamentario", "quantidade"}
+    if not colunas_req.issubset(demanda_detail.columns):
+        return pd.DataFrame(
+            columns=["material", "departamento", "programa_orcamentario", "proporcao"]
+        )
+
+    por_depto = (
+        demanda_detail.groupby(
+            ["material", "departamento", "programa_orcamentario"], as_index=False
+        )["quantidade"]
+        .sum()
+    )
+
+    total_mat = (
+        demanda_detail.groupby("material")["quantidade"]
+        .sum()
+        .rename("_total")
+        .reset_index()
+    )
+
+    por_depto = por_depto.merge(total_mat, on="material")
+    por_depto["proporcao"] = por_depto["quantidade"] / por_depto["_total"].replace(0, 1)
+
+    return por_depto[["material", "departamento", "programa_orcamentario", "proporcao"]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -262,6 +648,13 @@ def passo_1_2_demanda() -> pd.DataFrame:
 def passo_3_estoque() -> pd.DataFrame:
     separador("PASSO 3 │ CONSOLIDAR ESTOQUE (IGNORAR ENDEREÇAMENTO)")
 
+    # ── Detecção de formato: SAP tab-sep tem prioridade sobre estoque.csv legado ─
+    sap_path = os.path.join(DIR_DADOS, ARQ_ESTOQUE_SAP)
+    if os.path.exists(sap_path):
+        consolidado = ler_estoque_sap(sap_path)
+        salvar(consolidado, "01_estoque_consolidado.csv")
+        return consolidado
+
     df = pd.read_csv(os.path.join(DIR_DADOS, "estoque.csv"))
     print(f"  Linhas de endereçamento: {len(df)}")
 
@@ -289,6 +682,11 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
       df_abertos_futuros    — linhas originais filtradas (para rateio)
     """
     separador("PASSO 4 │ PEDIDOS EM ABERTO — ENTRADAS FUTURAS")
+
+    # ── Detecção de formato: remessas SAP têm prioridade sobre pedidos_abertos.csv ─
+    sap_path = os.path.join(DIR_DADOS, ARQ_REMESSAS_SAP)
+    if os.path.exists(sap_path):
+        return ler_remessas_sap(sap_path)   # já retorna (entradas, df_fut) no mesmo contrato
 
     df = pd.read_csv(
         os.path.join(DIR_DADOS, "pedidos_abertos.csv"),
@@ -321,7 +719,15 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
 # ─────────────────────────────────────────────────────────────────────────────
 # PASSO 5: CLASSIFICAÇÃO ABC
 # ─────────────────────────────────────────────────────────────────────────────
-def passo_5_abc(demanda: pd.DataFrame, materiais: pd.DataFrame) -> pd.DataFrame:
+def passo_5_abc(
+    demanda: pd.DataFrame,
+    materiais: pd.DataFrame,
+    contratos: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Parâmetro 'contratos' é opcional; quando fornecido, usa MAX(Preço líquido)
+    dos contratos para enriquecer o valor unitário dos materiais (inclusive
+    de contratos vencidos — regra ABC validada). Se None, comportamento
+    idêntico ao original (usa materiais.csv)."""
     separador("PASSO 5 │ CLASSIFICAÇÃO ABC")
 
     dem_total = (
@@ -331,6 +737,20 @@ def passo_5_abc(demanda: pd.DataFrame, materiais: pd.DataFrame) -> pd.DataFrame:
     )
     abc = dem_total.merge(materiais[["material", "valor_unitario"]], on="material", how="left")
     abc["valor_unitario"] = abc["valor_unitario"].fillna(0)
+
+    # ── Enriquecimento com preço dos contratos SAP (quando disponível) ─────────
+    if contratos is not None and not contratos.empty and "valor_unitario" in contratos.columns:
+        preco_sap = (
+            contratos.groupby("material", as_index=False)["valor_unitario"]
+            .max()
+            .rename(columns={"valor_unitario": "_preco_sap"})
+        )
+        abc = abc.merge(preco_sap, on="material", how="left")
+        # Substituir apenas onde o contrato tem preço > 0; manter original como fallback
+        mask = abc["_preco_sap"].notna() & (abc["_preco_sap"] > 0)
+        abc.loc[mask, "valor_unitario"] = abc.loc[mask, "_preco_sap"]
+        abc = abc.drop(columns=["_preco_sap"])
+        print(f"  Preço SAP aplicado    : {mask.sum()} material(is)")
     abc["valor_total"]    = abc["demanda_total"] * abc["valor_unitario"]
 
     abc = abc.sort_values("valor_total", ascending=False).reset_index(drop=True)
@@ -393,7 +813,12 @@ def passos_6_11_mrp(
     abc: pd.DataFrame,
     materiais: pd.DataFrame,
     lead_time_dias: int = LEAD_TIME_DIAS,
+    lead_times_dict: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Parâmetro 'lead_times_dict' é opcional (dict material→dias).
+    Quando fornecido, cada material usa seu próprio lead time;
+    ausentes no dict usam 'lead_time_dias' como fallback.
+    Quando None, comportamento idêntico ao original."""
     separador("PASSOS 6-11 │ CÁLCULO MRP MÊS A MÊS")
 
     hoje      = date.today()
@@ -476,8 +901,9 @@ def passos_6_11_mrp(
                 # ── Lead time em DIAS CORRIDOS ────────────────────────────────
                 # data_chegada = data_pedido + lead_time_dias
                 # Entrada alocada no mês da data_chegada
+                lt = lead_times_dict.get(mat, lead_time_dias) if lead_times_dict else lead_time_dias
                 per_entrega, data_ped, data_cheg = calcular_periodo_entrega(
-                    per, lead_time_dias
+                    per, lt
                 )
 
                 if per_entrega in periodos_set:
@@ -492,7 +918,7 @@ def passos_6_11_mrp(
                         "classe"             : classe,
                         "periodo_necessidade": per,
                         "data_pedido"        : data_ped.strftime("%d/%m/%Y"),
-                        "lead_time_dias"     : lead_time_dias,
+                        "lead_time_dias"     : lt,
                         "data_chegada"       : data_cheg.strftime("%d/%m/%Y"),
                         "periodo_entrega"    : per_entrega,
                         "quantidade"         : pedido,
@@ -559,10 +985,25 @@ def passos_6_11_mrp(
 def passo_12_rateio(
     df_pedidos_gerados: pd.DataFrame,
     df_pedidos_abertos: pd.DataFrame,
+    demanda_detail: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Parâmetro 'demanda_detail' é opcional: quando fornecido e rateio_base.csv
+    não existir, as proporções são derivadas da própria demanda DTM.
+    Quando rateio_base.csv existe, comportamento idêntico ao original."""
     separador("PASSO 12 │ RATEIO POR DEPARTAMENTO / PROGRAMA ORÇAMENTÁRIO")
 
-    rateio_base = pd.read_csv(os.path.join(DIR_DADOS, "rateio_base.csv"))
+    rb_path = os.path.join(DIR_DADOS, "rateio_base.csv")
+    if os.path.exists(rb_path):
+        rateio_base = pd.read_csv(rb_path)
+        print(f"  Fonte rateio         : rateio_base.csv ({len(rateio_base)} linhas)")
+    elif demanda_detail is not None and not demanda_detail.empty:
+        rateio_base = derivar_rateio_da_demanda(demanda_detail)
+        print(f"  Fonte rateio         : derivado da demanda ({len(rateio_base)} linhas)")
+    else:
+        print("  ⚠ rateio_base.csv não encontrado e demanda_detail não fornecida — sem rateio")
+        rateio_base = pd.DataFrame(
+            columns=["material", "departamento", "programa_orcamentario", "proporcao"]
+        )
 
     # ── Montar tabela unificada de pedidos ────────────────────────────────────
     linhas_pedidos: list[dict] = []
@@ -863,14 +1304,36 @@ def main() -> None:
     os.makedirs(DIR_DADOS, exist_ok=True)
     os.makedirs(DIR_SAIDA, exist_ok=True)
 
-    materiais                 = pd.read_csv(os.path.join(DIR_DADOS, "materiais.csv"))
+    # ── Carregar arquivos auxiliares (SAP novos + legado) ─────────────────────
+    materiais = pd.read_csv(os.path.join(DIR_DADOS, "materiais.csv"))
+
+    # Contratos SAP (opcional — enriquece preços para ABC)
+    contratos_path = os.path.join(DIR_DADOS, ARQ_CONTRATOS_SAP)
+    contratos = ler_contratos_sap(contratos_path) if os.path.exists(contratos_path) else pd.DataFrame()
+
+    # Lead times por material (opcional — fallback = LEAD_TIME_DIAS)
+    lt_path   = os.path.join(DIR_DADOS, ARQ_LEAD_TIMES)
+    lt_dict   = ler_lead_times(lt_path) if os.path.exists(lt_path) else {}
+
+    # ── Pipeline principal ────────────────────────────────────────────────────
     demanda                   = passo_1_2_demanda()
     estoque                   = passo_3_estoque()
     entradas, df_abertos_fut  = passo_4_pedidos_abertos()
-    abc                       = passo_5_abc(demanda, materiais)
-    df_mrp, df_ped            = passos_6_11_mrp(demanda, estoque, entradas, abc, materiais,
-                                                  lead_time_dias=LEAD_TIME_DIAS)
-    df_rateio                 = passo_12_rateio(df_ped, df_abertos_fut)
+    abc                       = passo_5_abc(demanda, materiais, contratos=contratos)
+    df_mrp, df_ped            = passos_6_11_mrp(
+                                    demanda, estoque, entradas, abc, materiais,
+                                    lead_time_dias=LEAD_TIME_DIAS,
+                                    lead_times_dict=lt_dict or None,
+                                )
+
+    # Recuperar detalhamento da demanda (departamento/programa) para rateio
+    caminho_raw = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW) if ARQUIVO_DEMANDA_RAW else None
+    demanda_detail = (
+        transformar_demanda_dtm(caminho_raw)
+        if caminho_raw and os.path.exists(caminho_raw)
+        else None
+    )
+    df_rateio = passo_12_rateio(df_ped, df_abertos_fut, demanda_detail=demanda_detail)
 
     _imprimir_mrp_pivot(df_mrp)
 
