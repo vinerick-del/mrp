@@ -472,6 +472,10 @@ def ler_materiais(source) -> pd.DataFrame:
         "VALOR UNITARIO" : "valor_unitario",
         "PRECO"          : "valor_unitario",
         "PREÇO"          : "valor_unitario",
+        "LEAD_TIME"      : "lead_time_dias",
+        "LEAD TIME"      : "lead_time_dias",
+        "LEADTIME"       : "lead_time_dias",
+        "LEAD_TIME_DIAS" : "lead_time_dias",
     }
     rename = {c: col_aliases[c.upper().strip()]
               for c in df.columns if c.upper().strip() in col_aliases}
@@ -492,7 +496,12 @@ def ler_materiais(source) -> pd.DataFrame:
     else:
         df["valor_unitario"] = df["valor_unitario"].apply(br_to_float)
 
-    return df[["material", "descricao", "valor_unitario"]].drop_duplicates(subset="material")
+    cols = ["material", "descricao", "valor_unitario"]
+    if "lead_time_dias" in df.columns:
+        df["lead_time_dias"] = pd.to_numeric(df["lead_time_dias"], errors="coerce")
+        cols.append("lead_time_dias")
+
+    return df[cols].drop_duplicates(subset="material")
 
 
 # ── Parser File 5: Lead Times ──────────────────────────────────────────────────
@@ -1445,9 +1454,17 @@ def main() -> None:
     contratos_path = os.path.join(DIR_DADOS, ARQ_CONTRATOS_SAP)
     contratos = ler_contratos_sap(contratos_path) if os.path.exists(contratos_path) else pd.DataFrame()
 
-    # Lead times por material (opcional — fallback = LEAD_TIME_DIAS)
-    lt_path   = os.path.join(DIR_DADOS, ARQ_LEAD_TIMES)
-    lt_dict   = ler_lead_times(lt_path) if os.path.exists(lt_path) else {}
+    # Lead times por material: coluna LEAD_TIME do materiais.csv (prioritário)
+    # Fallback: lead_times.csv separado; ausentes usam LEAD_TIME_DIAS
+    if "lead_time_dias" in materiais.columns:
+        lt_dict = {
+            str(row["material"]): int(row["lead_time_dias"])
+            for _, row in materiais.iterrows()
+            if pd.notna(row["lead_time_dias"])
+        }
+    else:
+        lt_path = os.path.join(DIR_DADOS, ARQ_LEAD_TIMES)
+        lt_dict = ler_lead_times(lt_path) if os.path.exists(lt_path) else {}
 
     # ── Pipeline principal ────────────────────────────────────────────────────
     demanda                   = passo_1_2_demanda()

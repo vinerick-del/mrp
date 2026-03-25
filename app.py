@@ -205,8 +205,17 @@ if btn_processar:
             contratos = ler_contratos_sap(cont_path) if os.path.exists(cont_path) else pd.DataFrame()
 
             # ── Lead Times ────────────────────────────────────────────────────
-            lt_path = os.path.join(DIR_DADOS, "lead_times.csv")
-            lt_dict = ler_lead_times(lt_path) if os.path.exists(lt_path) else {}
+            # Prioritário: coluna LEAD_TIME do materiais.csv
+            # Fallback: lead_times.csv separado (upload ⑥)
+            if "lead_time_dias" in materiais.columns:
+                lt_dict = {
+                    str(row["material"]): int(row["lead_time_dias"])
+                    for _, row in materiais.iterrows()
+                    if pd.notna(row["lead_time_dias"])
+                }
+            else:
+                lt_path = os.path.join(DIR_DADOS, "lead_times.csv")
+                lt_dict = ler_lead_times(lt_path) if os.path.exists(lt_path) else {}
 
             # ── Pipeline MRP ──────────────────────────────────────────────────
             demanda                  = passo_1_2_demanda()
