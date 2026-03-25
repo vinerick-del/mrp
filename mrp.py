@@ -188,6 +188,24 @@ def ler_remessas_sap(source) -> tuple:
 
     df = df.rename(columns=col_map)
 
+    # ── Colunas financeiras opcionais ─────────────────────────────────────────
+    # Data do documento = quando o pedido foi criado no SAP (visão orçamentária)
+    if "Data do documento" in df.columns and col_data != "Data do documento":
+        df["data_pedido_doc"] = pd.to_datetime(
+            df["Data do documento"], format="%d/%m/%Y", errors="coerce"
+        )
+        df["mes_pedido"] = df["data_pedido_doc"].dt.to_period("M").astype(str)
+    else:
+        df["mes_pedido"] = None  # não disponível neste formato
+
+    # Preço líquido → valor unitário do pedido SAP
+    if "Preço líquido" in df.columns:
+        df["valor_unitario_pedido"] = df["Preço líquido"].apply(br_to_float)
+    elif "Valor líquido pedido" in df.columns:
+        df["valor_unitario_pedido"] = df["Valor líquido pedido"].apply(br_to_float) / df["quantidade"].replace(0, 1)
+    else:
+        df["valor_unitario_pedido"] = 0.0
+
     # ── Filtro 1: eliminar código 'L' ─────────────────────────────────────────
     antes = len(df)
     df = df[df["codigo_eliminacao"].fillna("").str.strip().str.upper() != "L"].copy()
@@ -218,6 +236,7 @@ def ler_remessas_sap(source) -> tuple:
         df.loc[atrasados, "mes_remessa"] = mes_atual
 
     df_fut = df[df["mes_remessa"] >= mes_atual].copy()
+    df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
 
     print(f"  Remessas após filtros : {len(df_fut)} linha(s)")
     print(f"  Materiais únicos      : {df_fut['material'].nunique()}")
@@ -839,10 +858,21 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     # REGRA: usar EXCLUSIVAMENTE data_remessa
     df["mes_remessa"] = df["data_remessa"].dt.to_period("M").astype(str)
 
+    # Colunas financeiras opcionais (presentes em exports SAP)
+    if "data_pedido" in df.columns:
+        df["mes_pedido"] = pd.to_datetime(df["data_pedido"], errors="coerce").dt.to_period("M").astype(str)
+    else:
+        df["mes_pedido"] = None
+    if "valor_unitario" in df.columns:
+        df["valor_unitario_pedido"] = pd.to_numeric(df["valor_unitario"], errors="coerce").fillna(0.0)
+    else:
+        df["valor_unitario_pedido"] = 0.0
+
     hoje      = date.today()
     mes_atual = str(pd.Period(hoje, "M"))
 
     df_fut = df[df["mes_remessa"] >= mes_atual].copy()
+    df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
 
     print(f"  Pedidos em aberto     : {len(df)}")
     print(f"  Mês de referência     : {mes_atual}")

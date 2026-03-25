@@ -252,6 +252,7 @@ if btn_processar:
             st.session_state["resultado"] = {
                 "mrp"           : df_mrp_out,
                 "pedidos"       : df_ped,
+                "abertos_fut"   : df_abertos_fut,
                 "rateio"        : df_rateio,
                 "alertas_rup"   : alertas_rup,
                 "alertas_cont"  : alertas_cont,
@@ -274,12 +275,13 @@ if btn_processar:
 # ─────────────────────────────────────────────────────────────────────────────
 if "resultado" in st.session_state:
     r = st.session_state["resultado"]
-    df_mrp      = r["mrp"]
-    df_ped      = r["pedidos"]
-    df_rateio   = r["rateio"]
-    rup         = r["alertas_rup"]
-    cont        = r["alertas_cont"]
-    contratos   = r["contratos"]
+    df_mrp        = r["mrp"]
+    df_ped        = r["pedidos"]
+    df_abertos_fut= r.get("abertos_fut", pd.DataFrame())
+    df_rateio     = r["rateio"]
+    rup           = r["alertas_rup"]
+    cont          = r["alertas_cont"]
+    contratos     = r["contratos"]
 
     # ── Métricas resumo ───────────────────────────────────────────────────────
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -300,10 +302,11 @@ if "resultado" in st.session_state:
     st.divider()
 
     # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_mrp, tab_proj, tab_ped, tab_rup, tab_cont, tab_rat = st.tabs([
+    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat = st.tabs([
         "📊 MRP Projetado",
         "📅 Projeção Mensal",
         "🛒 Pedidos a Gerar",
+        "💰 Visão Financeira",
         "🔴 Alertas de Ruptura",
         "📋 Saldo de Contrato",
         "📂 Rateio",
@@ -404,6 +407,82 @@ if "resultado" in st.session_state:
                 use_container_width=True,
                 height=380,
             )
+
+    with tab_fin:
+        st.subheader("Visão Financeira")
+
+        def _fmt_brl(v: float) -> str:
+            if v >= 1_000_000:
+                return f"R$ {v/1_000_000:.2f}M"
+            if v >= 1_000:
+                return f"R$ {v/1_000:.1f}K"
+            return f"R$ {v:,.2f}"
+
+        # ── Novos pedidos MRP ─────────────────────────────────────────────────
+        linhas_mrp = []
+        if not df_ped.empty:
+            tmp = df_ped.copy()
+            tmp["mes_pedido"]  = pd.to_datetime(tmp["data_pedido"],  format="%d/%m/%Y", errors="coerce").dt.to_period("M").astype(str)
+            tmp["mes_entrega"] = tmp["periodo_entrega"]
+            tmp["origem"]      = "Novo Pedido (MRP)"
+            tmp["valor_pedido"]= tmp["valor_total_pedido"]
+            linhas_mrp = [tmp[["origem", "material", "quantidade", "valor_pedido", "mes_pedido", "mes_entrega"]]]
+
+        # ── Pedidos existentes SAP ────────────────────────────────────────────
+        linhas_sap = []
+        if not df_abertos_fut.empty:
+            tmp2 = df_abertos_fut.copy()
+            # Valor: usa valor_total_pedido do parser; fallback: enriquecer via ABC
+            if "valor_total_pedido" not in tmp2.columns or tmp2["valor_total_pedido"].fillna(0).sum() == 0:
+                abc_price = r["abc"][["material", "valor_unitario"]].drop_duplicates("material")
+                tmp2 = tmp2.merge(abc_price, on="material", how="left")
+                tmp2["valor_total_pedido"] = tmp2["quantidade"] * tmp2["valor_unitario"].fillna(0)
+            tmp2["mes_pedido"]  = tmp2.get("mes_pedido", pd.Series(["Já Comprometido"] * len(tmp2), index=tmp2.index))
+            tmp2["mes_pedido"]  = tmp2["mes_pedido"].fillna("Já Comprometido")
+            tmp2["mes_entrega"] = tmp2["mes_remessa"]
+            tmp2["origem"]      = "Pedido Existente (SAP)"
+            tmp2["valor_pedido"]= tmp2["valor_total_pedido"].fillna(0)
+            linhas_sap = [tmp2[["origem", "material", "quantidade", "valor_pedido", "mes_pedido", "mes_entrega"]]]
+
+        todas = linhas_mrp + linhas_sap
+        if not todas:
+            st.info("Nenhum dado financeiro disponível.")
+        else:
+            df_fin = pd.concat(todas, ignore_index=True)
+
+            subtab_orc, subtab_cx = st.tabs([
+                "📊 Visão Orçamentária (Emissão)",
+                "💸 Visão de Caixa (Entrega)",
+            ])
+
+            with subtab_orc:
+                st.caption("Compromisso financeiro agrupado por mês de emissão do pedido")
+                agg = (df_fin.groupby(["mes_pedido", "origem"], as_index=False)["valor_pedido"]
+                       .sum()
+                       .pivot(index="mes_pedido", columns="origem", values="valor_pedido")
+                       .fillna(0)
+                       .sort_index())
+                agg["Total"] = agg.sum(axis=1)
+                st.bar_chart(agg.drop(columns=["Total"]))
+                agg_fmt = agg.copy()
+                for col in agg_fmt.columns:
+                    agg_fmt[col] = agg_fmt[col].apply(_fmt_brl)
+                st.dataframe(agg_fmt, use_container_width=True)
+
+            with subtab_cx:
+                st.caption("Impacto no contas a pagar agrupado por mês de entrega do material")
+                agg2 = (df_fin[df_fin["mes_entrega"] != "além_horizonte"]
+                        .groupby(["mes_entrega", "origem"], as_index=False)["valor_pedido"]
+                        .sum()
+                        .pivot(index="mes_entrega", columns="origem", values="valor_pedido")
+                        .fillna(0)
+                        .sort_index())
+                agg2["Total"] = agg2.sum(axis=1)
+                st.bar_chart(agg2.drop(columns=["Total"]))
+                agg2_fmt = agg2.copy()
+                for col in agg2_fmt.columns:
+                    agg2_fmt[col] = agg2_fmt[col].apply(_fmt_brl)
+                st.dataframe(agg2_fmt, use_container_width=True)
 
     with tab_rup:
         st.subheader("Alertas de Ruptura de Estoque")
