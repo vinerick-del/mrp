@@ -283,8 +283,9 @@ if "resultado" in st.session_state:
     st.divider()
 
     # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_mrp, tab_ped, tab_rup, tab_cont, tab_rat = st.tabs([
+    tab_mrp, tab_proj, tab_ped, tab_rup, tab_cont, tab_rat = st.tabs([
         "📊 MRP Projetado",
+        "📅 Projeção Mensal",
         "🛒 Pedidos a Gerar",
         "🔴 Alertas de Ruptura",
         "📋 Saldo de Contrato",
@@ -306,6 +307,37 @@ if "resultado" in st.session_state:
             ),
             use_container_width=True,
             height=420,
+        )
+
+    with tab_proj:
+        st.subheader("Projeção Mensal de Estoque por Material")
+        st.caption("Estoque projetado (un.) ao final de cada mês · última coluna = saldo final do horizonte")
+
+        # Pivot: linhas = material+classe, colunas = meses ordenados
+        pivot = (
+            df_mrp.pivot_table(
+                index=["material", "classe"],
+                columns="mes",
+                values="estoque_proj",
+                aggfunc="sum",
+            )
+            .reset_index()
+        )
+        # Garantir colunas de mês em ordem cronológica
+        mes_cols = sorted([c for c in pivot.columns if c not in ("material", "classe")])
+        pivot = pivot[["material", "classe"] + mes_cols]
+
+        # Saldo Final = último mês do horizonte
+        if mes_cols:
+            pivot["Saldo Final"] = pivot[mes_cols[-1]]
+
+        st.dataframe(
+            pivot.style.applymap(
+                lambda v: "background-color: #ffcccc" if isinstance(v, (int, float)) and v < 0 else "",
+                subset=mes_cols + (["Saldo Final"] if mes_cols else []),
+            ),
+            use_container_width=True,
+            height=450,
         )
 
     with tab_ped:
@@ -359,7 +391,25 @@ if "resultado" in st.session_state:
     st.divider()
     st.subheader("📥 Download")
 
-    dfs_excel: dict[str, pd.DataFrame] = {"MRP Projetado": df_mrp}
+    # Montar pivot para Excel (igual ao da aba Projeção Mensal)
+    _pivot_excel = (
+        df_mrp.pivot_table(
+            index=["material", "classe"],
+            columns="mes",
+            values="estoque_proj",
+            aggfunc="sum",
+        )
+        .reset_index()
+    )
+    _mes_cols_excel = sorted([c for c in _pivot_excel.columns if c not in ("material", "classe")])
+    _pivot_excel = _pivot_excel[["material", "classe"] + _mes_cols_excel]
+    if _mes_cols_excel:
+        _pivot_excel["Saldo Final"] = _pivot_excel[_mes_cols_excel[-1]]
+
+    dfs_excel: dict[str, pd.DataFrame] = {
+        "MRP Projetado"   : df_mrp,
+        "Projeção Mensal" : _pivot_excel,
+    }
     if not df_ped.empty:
         dfs_excel["Pedidos"] = df_ped
     if not df_rateio.empty:
