@@ -140,7 +140,9 @@ with st.sidebar:
                                    help="Exportação MB52 / MMBE — separado por TAB")
     f_contratos = st.file_uploader("④ Contratos SAP (framework)", type=["csv", "txt"],
                                    help="Exportação ME3M / ME3N — separado por TAB")
-    f_lead      = st.file_uploader("⑤ Lead Times (opcional)", type=["csv"],
+    f_materiais = st.file_uploader("⑤ Materiais (catálogo SAP)", type=["csv", "txt"],
+                                   help="Exportação MM60 / MM03 — CÓDIGO | DESCRIÇÃO | VALOR UNITÁRIO")
+    f_lead      = st.file_uploader("⑥ Lead Times (opcional)", type=["csv"],
                                    help="CSV simples: material,lead_time_dias")
 
     st.divider()
@@ -186,6 +188,7 @@ if btn_processar:
                 _salvar_upload(f_remessas,  "remessas_sap.csv"),
                 _salvar_upload(f_estoque,   "estoque_sap.csv"),
                 _salvar_upload(f_contratos, "contratos_sap.csv"),
+                _salvar_upload(f_materiais, "materiais.csv"),
                 _salvar_upload(f_lead,      "lead_times.csv"),
             ])
             if not ok:
