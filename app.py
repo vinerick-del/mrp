@@ -10,6 +10,7 @@ import tempfile
 from datetime import date, timedelta
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 # ── Importar funções do motor MRP existente ────────────────────────────────────
@@ -69,14 +70,73 @@ def _tmp_path(uploaded, suffix=".csv") -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPERS FINANCEIROS
+# ─────────────────────────────────────────────────────────────────────────────
+_FMT_MOEDA_EXCEL = '"R$ "#,##0.00'   # formato contábil R$ para openpyxl
+
+
+def _fmt_brl_contabil(v) -> str:
+    """Formata float em estilo contábil brasileiro: R$ 5.657.464,51 ou R$ (1.234,56)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "-"
+    neg = v < 0
+    s = f"{abs(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ ({s})" if neg else f"R$ {s}"
+
+
+def _chart_financeiro(agg: pd.DataFrame, titulo: str, cor_tendencia: str = "#FFD700") -> None:
+    """Gráfico de barras empilhadas por origem + linha de tendência Total."""
+    origens = [c for c in agg.columns if c != "Total"]
+    fig = go.Figure()
+    for orig in origens:
+        fig.add_trace(go.Bar(name=orig, x=list(agg.index), y=list(agg[orig])))
+    fig.add_trace(go.Scatter(
+        name="Total (tendência)",
+        x=list(agg.index),
+        y=list(agg["Total"]),
+        mode="lines+markers",
+        line=dict(color=cor_tendencia, width=2, dash="dot"),
+        marker=dict(size=7),
+        yaxis="y",
+    ))
+    fig.update_layout(
+        barmode="stack",
+        title=titulo,
+        yaxis_title="R$",
+        legend=dict(orientation="h", y=-0.2),
+        margin=dict(t=40, b=60),
+        height=400,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPER: gerar Excel com múltiplas abas em memória
 # ─────────────────────────────────────────────────────────────────────────────
 def _gerar_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
-    """Recebe {nome_aba: DataFrame} e retorna bytes do .xlsx."""
+    """Recebe {nome_aba: DataFrame} e retorna bytes do .xlsx.
+    Colunas cujo nome contém 'valor', 'total' ou 'parcela' recebem formato R$ contábil.
+    """
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for nome_aba, df in dfs.items():
-            df.to_excel(writer, sheet_name=nome_aba[:31], index=False)
+            df.to_excel(writer, sheet_name=nome_aba[:31], index=True)
+            ws = writer.sheets[nome_aba[:31]]
+            # Aplica formato contábil nas colunas de valor
+            colunas_valor = [
+                i + 2  # +1 porque index ocupa col A, +1 para base 1
+                for i, col in enumerate(df.columns)
+                if any(k in str(col).lower() for k in ("valor", "total", "parcela"))
+            ]
+            for col_idx in colunas_valor:
+                for row in ws.iter_rows(
+                    min_row=2, max_row=ws.max_row,
+                    min_col=col_idx, max_col=col_idx
+                ):
+                    for cell in row:
+                        cell.number_format = _FMT_MOEDA_EXCEL
     return buf.getvalue()
 
 
@@ -423,7 +483,7 @@ if "resultado" in st.session_state:
                     delta=f"{int(sub['quantidade'].sum()):,} un. · {val_str}" if not sub.empty else "0 un.",
                 )
 
-            fmt_moeda = {"valor_unitario": "{:,.2f}", "valor_total_pedido": "{:,.2f}"}
+            fmt_moeda = {"valor_unitario": _fmt_brl_contabil, "valor_total_pedido": _fmt_brl_contabil}
             st.dataframe(
                 df_ped.style.format(fmt_moeda, na_rep="-"),
                 use_container_width=True,
@@ -432,13 +492,6 @@ if "resultado" in st.session_state:
 
     with tab_fin:
         st.subheader("Visão Financeira")
-
-        def _fmt_brl(v: float) -> str:
-            if v >= 1_000_000:
-                return f"R$ {v/1_000_000:.2f}M"
-            if v >= 1_000:
-                return f"R$ {v/1_000:.1f}K"
-            return f"R$ {v:,.2f}"
 
         # ── Novos pedidos MRP ─────────────────────────────────────────────────
         # data_base = data_chegada calculada pelo lead time
@@ -525,11 +578,13 @@ if "resultado" in st.session_state:
                        .fillna(0)
                        .sort_index())
                 agg["Total"] = agg.sum(axis=1)
-                st.bar_chart(agg.drop(columns=["Total"]))
+                _chart_financeiro(agg, "Compromisso por Mês de Emissão")
                 agg_fmt = agg.copy()
                 for col in agg_fmt.columns:
-                    agg_fmt[col] = agg_fmt[col].apply(_fmt_brl)
+                    agg_fmt[col] = agg_fmt[col].apply(_fmt_brl_contabil)
                 st.dataframe(agg_fmt, use_container_width=True)
+                # Guarda para exportação Excel
+                st.session_state["_vis_orcamentaria"] = agg
 
             with subtab_cx:
                 st.caption(
@@ -599,11 +654,13 @@ if "resultado" in st.session_state:
                         .sort_index()
                     )
                     agg_cx["Total"] = agg_cx.sum(axis=1)
-                    st.bar_chart(agg_cx.drop(columns=["Total"]))
+                    _chart_financeiro(agg_cx, "Desembolso por Mês de Pagamento")
                     agg_cx_fmt = agg_cx.copy()
                     for col in agg_cx_fmt.columns:
-                        agg_cx_fmt[col] = agg_cx_fmt[col].apply(_fmt_brl)
+                        agg_cx_fmt[col] = agg_cx_fmt[col].apply(_fmt_brl_contabil)
                     st.dataframe(agg_cx_fmt, use_container_width=True)
+                    # Guarda para exportação Excel
+                    st.session_state["_vis_caixa"] = agg_cx
 
                     with st.expander("⚠️ Log: Documentos sem Política (Aplicado Padrão 60/90 dias)"):
                         if log_sem_politica:
@@ -613,9 +670,10 @@ if "resultado" in st.session_state:
                                 .reset_index(drop=True)
                             )
                             st.caption(f"{len(df_log)} documento(s) usaram a política padrão [60, 90] dias.")
-                            fmt_log = {"valor_pedido": "{:,.2f}"}
                             st.dataframe(
-                                df_log.style.format(fmt_log, na_rep="-"),
+                                df_log.style.format(
+                                    {"valor_pedido": _fmt_brl_contabil}, na_rep="-"
+                                ),
                                 use_container_width=True,
                             )
                         else:
@@ -671,6 +729,11 @@ if "resultado" in st.session_state:
         dfs_excel["Alertas Ruptura"] = rup
     if not cont.empty:
         dfs_excel["Contrato Insuficiente"] = cont
+    # Visão Financeira — adicionadas quando a aba é visitada
+    if "_vis_orcamentaria" in st.session_state:
+        dfs_excel["Visão Orçamentária"] = st.session_state["_vis_orcamentaria"]
+    if "_vis_caixa" in st.session_state:
+        dfs_excel["Visão de Caixa"] = st.session_state["_vis_caixa"]
 
     try:
         excel_bytes = _gerar_excel(dfs_excel)
