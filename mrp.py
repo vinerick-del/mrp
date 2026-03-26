@@ -109,19 +109,17 @@ def br_to_float(s) -> float:
     if s in ("", "-", "+", "nan", "NaN"):
         return 0.0
 
-    # Detecta sinal à direita (formato SAP: '1.234,56-')
-    trailing_neg = s.endswith("-")
-    trailing_pos = s.endswith("+")
-    if trailing_neg or trailing_pos:
-        s = s[:-1].strip()
+    # Sinal à direita (formato SAP: '1.234,56-')
+    if s.endswith("-"):
+        s = "-" + s[:-1]
+    elif s.endswith("+"):
+        s = s[:-1]
 
     s = s.replace(".", "").replace(",", ".")
     try:
-        v = float(s)
+        return float(s)
     except ValueError:
         return 0.0
-
-    return -v if trailing_neg else v
 
 
 def _ler_sap_tabsep(source) -> pd.DataFrame:
@@ -624,15 +622,17 @@ def ler_historico_mb51(source) -> pd.DataFrame:
     print(f"  Linhas 101: {(df['tipo_mov']=='101').sum()}  |  Linhas 102: {(df['tipo_mov']=='102').sum()}")
 
     # ── Converter valores e quantidades ──────────────────────────────────────
-    # Amostra dos valores raw para diagnóstico
     print(f"  Amostra _valor_raw: {df['_valor_raw'].head(5).tolist()}")
     df["valor"]     = df["_valor_raw"].apply(br_to_float)
     df["quantidade"]= df["_qtd_raw"].apply(br_to_float)
 
-    # ── Garantir sinal negativo nos estornos (102) ────────────────────────────
-    mask_102 = df["tipo_mov"] == "102"
-    df.loc[mask_102, "valor"]      = df.loc[mask_102, "valor"].abs() * -1
-    df.loc[mask_102, "quantidade"] = df.loc[mask_102, "quantidade"].abs() * -1
+    # ── Garantir sinais corretos por tipo de movimento ────────────────────────
+    # 101 (recebimento) → sempre positivo
+    df.loc[(df["tipo_mov"] == "101") & (df["valor"] < 0), "valor"] *= -1
+    df.loc[(df["tipo_mov"] == "101") & (df["quantidade"] < 0), "quantidade"] *= -1
+    # 102 (estorno)     → sempre negativo
+    df.loc[(df["tipo_mov"] == "102") & (df["valor"] > 0), "valor"] *= -1
+    df.loc[(df["tipo_mov"] == "102") & (df["quantidade"] > 0), "quantidade"] *= -1
 
     # ── Converter data → mês ──────────────────────────────────────────────────
     df["data_doc"]    = pd.to_datetime(df["data_doc"], format="%d/%m/%Y", errors="coerce")
@@ -642,15 +642,16 @@ def ler_historico_mb51(source) -> pd.DataFrame:
         print(f"  ⚠ {n_data_invalida} linhas com data inválida — descartadas")
     df = df[df["mes_entrega"].notna()].copy()
 
-    # ── Log de totais por mês (para conferência com relatório SAP) ────────────
-    totais_mes = df.groupby("mes_entrega")["valor"].sum()
-    print("  Totais por mês (101+102 líquido):")
-    for mes, val in totais_mes.items():
-        print(f"    {mes}: R$ {val:,.2f}")
-    print(f"  TOTAL GERAL: R$ {df['valor'].sum():,.2f}")
-
-    # ── Normalizar material ───────────────────────────────────────────────────
+    # ── Normalizar material (sem inner join — todos os materiais são mantidos) ─
     df["material"] = df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
+
+    # ── Auditoria: totais por mês para conferência com relatório SAP ──────────
+    totais_mes = df.groupby("mes_entrega")["valor"].sum()
+    print("  ┌─ Auditoria MB51 (101 − 102) ──────────────────────────")
+    for mes, val in totais_mes.items():
+        print(f"  │  {mes}: R$ {val:>18,.2f}")
+    print(f"  │  TOTAL GERAL : R$ {df['valor'].sum():>15,.2f}")
+    print("  └───────────────────────────────────────────────────────")
 
     # ── Agrupar por material + mês ────────────────────────────────────────────
     resultado = (
