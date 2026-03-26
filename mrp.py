@@ -1197,50 +1197,73 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     materiais_validos = set(df["material"].unique())
     print(f"  Base pedidos_abertos : {len(df)} linha(s), {len(materiais_validos)} material(is)")
 
-    # ── LOOKUP: REMESSAS_SAP → data_remessa, numero_pedido, contrato, mes_pedido ─
-    if tem_sap:
-        lookup = _ler_remessas_lookup(sap_path)
-        # Restringir lookup apenas a materiais que existem na base limpa
-        lookup = lookup[lookup["material"].isin(materiais_validos)]
-        print(f"  Lookup SAP (filtrado): {len(lookup)} registro(s)")
-
-        # Chave de join: (material + numero_pedido) se ambos disponíveis; senão só material
-        has_num_ped_base = (
-            "numero_pedido" in df.columns
-            and df["numero_pedido"].notna().any()
-        )
-        has_num_ped_sap = lookup["numero_pedido"].notna().any()
-
-        if has_num_ped_base and has_num_ped_sap:
-            df["numero_pedido"] = df["numero_pedido"].astype(str).str.strip()
-            df = df.merge(
-                lookup[["material", "numero_pedido", "data_remessa", "contrato", "mes_pedido"]],
-                on=["material", "numero_pedido"],
-                how="left",
-            )
-        else:
-            df = df.merge(
-                lookup[["material", "data_remessa", "numero_pedido", "contrato", "mes_pedido"]],
-                on="material",
-                how="left",
-            )
-
-        sem_data = df["data_remessa"].isna().sum()
-        if sem_data:
-            print(f"  ⚠ {sem_data} linha(s) sem data no lookup SAP — descartadas")
+    # ── Data de remessa — lida diretamente do pedidos_abertos (ME2M já tem) ───
+    col_data_ped = next(
+        (c for c in df.columns if c.lower() in (
+            "data de remessa", "data remessa", "delivery date",
+            "data do documento", "data doc.",
+        )), None
+    )
+    if col_data_ped:
+        df["data_remessa"] = pd.to_datetime(df[col_data_ped], format="%d/%m/%Y", errors="coerce")
+        print(f"  Data remessa de      : '{col_data_ped}' (pedidos_abertos)")
     else:
-        # Sem SAP: usa coluna de data já presente no CSV (se houver)
-        col_dt = next(
-            (c for c in df.columns if "remessa" in c.lower() and "data" in c.lower()), None
-        ) or next(
-            (c for c in df.columns if "data" in c.lower()), None
-        )
-        df["data_remessa"] = (
-            pd.to_datetime(df[col_dt], errors="coerce") if col_dt else pd.NaT
-        )
-        for col in ("numero_pedido", "contrato", "mes_pedido"):
-            if col not in df.columns:
-                df[col] = None
+        df["data_remessa"] = pd.NaT
+        print("  ⚠ Nenhuma coluna de data encontrada em pedidos_abertos")
+
+    # ── Nº pedido e contrato — lidos diretamente do pedidos_abertos ───────────
+    col_num_ped = next(
+        (c for c in df.columns if c.lower() in (
+            "documento de compras", "nº doc. compras", "purchase order",
+            "doc. de compras", "pedido de compra",
+        )), None
+    )
+    col_cont = next(
+        (c for c in df.columns if c.lower() in (
+            "contrato básico", "contrato basico", "contract", "contrato",
+        )), None
+    )
+    col_doc_criacao = next(
+        (c for c in df.columns if c.lower() in (
+            "data do documento", "data doc.", "doc. date", "data criação",
+        ) and c != col_data_ped), None
+    )
+
+    df["numero_pedido"] = df[col_num_ped].astype(str).str.strip() if col_num_ped else None
+    df["contrato"]      = df[col_cont].astype(str).str.strip()    if col_cont  else None
+    df["mes_pedido"]    = (
+        pd.to_datetime(df[col_doc_criacao], format="%d/%m/%Y", errors="coerce")
+        .dt.to_period("M").astype(str)
+        if col_doc_criacao else None
+    )
+
+    # ── Complemento via REMESSAS_SAP — só se faltarem data ou doc na base ─────
+    # (NÃO deduplica — apenas enriquece colunas ausentes linha a linha)
+    precisa_data = df["data_remessa"].isna().all()
+    precisa_doc  = df["numero_pedido"].isna().all() or df["contrato"].isna().all()
+
+    if tem_sap and (precisa_data or precisa_doc):
+        print(f"  Buscando complemento no REMESSAS_SAP (precisa_data={precisa_data})")
+        lookup = _ler_remessas_lookup(sap_path)
+        lookup = lookup[lookup["material"].isin(materiais_validos)]
+
+        join_cols = ["material", "numero_pedido"] if (
+            col_num_ped and lookup["numero_pedido"].notna().any()
+        ) else ["material"]
+
+        enrich_cols = [c for c in ["data_remessa", "numero_pedido", "contrato", "mes_pedido"]
+                       if c not in df.columns or df[c].isna().all()]
+        if enrich_cols:
+            df = df.merge(
+                lookup[join_cols + enrich_cols].drop_duplicates(subset=join_cols),
+                on=join_cols, how="left",
+                suffixes=("", "_sap"),
+            )
+            # Preenche apenas onde estava nulo
+            for col in enrich_cols:
+                if f"{col}_sap" in df.columns:
+                    df[col] = df[col].fillna(df[f"{col}_sap"])
+                    df.drop(columns=[f"{col}_sap"], inplace=True)
 
     # ── Filtrar linhas sem data de entrega ────────────────────────────────────
     df = df.dropna(subset=["data_remessa"]).copy()
