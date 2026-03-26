@@ -95,19 +95,33 @@ def salvar(df: pd.DataFrame, nome: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def br_to_float(s) -> float:
-    """Converte número no formato brasileiro ('3.515,50') para float (3515.50).
-    Regra: remove separador de milhar (ponto) e troca decimal (vírgula) por ponto.
+    """Converte número no formato brasileiro para float.
+
+    Suporta:
+      '3.515,50'   → 3515.50
+      '-3.515,50'  → -3515.50
+      '3.515,50-'  → -3515.50  (sinal à direita, padrão SAP)
+      '3.515,50+'  → 3515.50   (sinal à direita positivo)
     """
     if s is None:
         return 0.0
     s = str(s).strip()
-    if s in ("", "-", "nan", "NaN"):
+    if s in ("", "-", "+", "nan", "NaN"):
         return 0.0
+
+    # Detecta sinal à direita (formato SAP: '1.234,56-')
+    trailing_neg = s.endswith("-")
+    trailing_pos = s.endswith("+")
+    if trailing_neg or trailing_pos:
+        s = s[:-1].strip()
+
     s = s.replace(".", "").replace(",", ".")
     try:
-        return float(s)
+        v = float(s)
     except ValueError:
         return 0.0
+
+    return -v if trailing_neg else v
 
 
 def _ler_sap_tabsep(source) -> pd.DataFrame:
@@ -600,12 +614,18 @@ def ler_historico_mb51(source) -> pd.DataFrame:
 
     # ── Filtrar apenas 101 e 102 ──────────────────────────────────────────────
     df["tipo_mov"] = df["tipo_mov"].astype(str).str.strip()
+    todos_movs = df["tipo_mov"].value_counts().to_dict()
+    print(f"  Tipos de movimento encontrados: {todos_movs}")
     df = df[df["tipo_mov"].isin(["101", "102"])].copy()
     if df.empty:
         print("  ⚠ MB51: nenhum movimento 101/102 encontrado.")
         return pd.DataFrame(columns=["material", "mes_entrega", "quantidade", "valor_pedido"])
 
+    print(f"  Linhas 101: {(df['tipo_mov']=='101').sum()}  |  Linhas 102: {(df['tipo_mov']=='102').sum()}")
+
     # ── Converter valores e quantidades ──────────────────────────────────────
+    # Amostra dos valores raw para diagnóstico
+    print(f"  Amostra _valor_raw: {df['_valor_raw'].head(5).tolist()}")
     df["valor"]     = df["_valor_raw"].apply(br_to_float)
     df["quantidade"]= df["_qtd_raw"].apply(br_to_float)
 
@@ -617,7 +637,17 @@ def ler_historico_mb51(source) -> pd.DataFrame:
     # ── Converter data → mês ──────────────────────────────────────────────────
     df["data_doc"]    = pd.to_datetime(df["data_doc"], format="%d/%m/%Y", errors="coerce")
     df["mes_entrega"] = df["data_doc"].dt.to_period("M").astype(str)
+    n_data_invalida   = df["data_doc"].isna().sum()
+    if n_data_invalida:
+        print(f"  ⚠ {n_data_invalida} linhas com data inválida — descartadas")
     df = df[df["mes_entrega"].notna()].copy()
+
+    # ── Log de totais por mês (para conferência com relatório SAP) ────────────
+    totais_mes = df.groupby("mes_entrega")["valor"].sum()
+    print("  Totais por mês (101+102 líquido):")
+    for mes, val in totais_mes.items():
+        print(f"    {mes}: R$ {val:,.2f}")
+    print(f"  TOTAL GERAL: R$ {df['valor'].sum():,.2f}")
 
     # ── Normalizar material ───────────────────────────────────────────────────
     df["material"] = df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
