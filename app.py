@@ -490,7 +490,9 @@ if "resultado" in st.session_state:
         linhas_mb51 = []
         if not df_mb51.empty:
             tmp3 = df_mb51.copy()
-            tmp3["mes_pedido"]          = "Realizado no Passado"
+            # mes_pedido = mes_entrega: para histórico já recebido,
+            # o mês de recebimento é o mês do compromisso orçamentário
+            tmp3["mes_pedido"]          = tmp3["mes_entrega"]
             tmp3["data_base_pagamento"] = pd.to_datetime(
                 tmp3["mes_entrega"] + "-01", format="%Y-%m-%d", errors="coerce"
             )
