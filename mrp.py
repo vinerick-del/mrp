@@ -1134,31 +1134,65 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     df = _ler_sap_tabsep(ped_path)
     df.columns = df.columns.str.strip()
 
+    # Material
     col_mat = next(
-        (c for c in df.columns if c.lower() in ("material", "cod. material", "código material")),
+        (c for c in df.columns if c.lower() in (
+            "material", "nº material", "nr. material", "número material",
+            "cod. material", "código material",
+        )),
         df.columns[0],
     )
     df = df.rename(columns={col_mat: "material"})
     df["material"] = df["material"].astype(str).str.strip()
 
+    # Filtro código de eliminação 'L' (mesmo critério do ler_remessas_sap)
+    col_elim = next(
+        (c for c in df.columns if "eliminação" in c.lower() or "eliminacao" in c.lower()
+         or "deletion" in c.lower()), None
+    )
+    if col_elim:
+        antes = len(df)
+        df = df[df[col_elim].fillna("").str.strip().str.upper() != "L"].copy()
+        print(f"  Filtro código 'L'    : {antes - len(df)} linha(s) removida(s)")
+
+    # Quantidade — ME2M: "a ser fornecida (quantidade)"
     col_qtd = next(
-        (c for c in df.columns if c.lower() in ("quantidade", "qty", "qtd", "qtd.")), None
+        (c for c in df.columns if c.lower() in (
+            "quantidade", "qty", "qtd", "qtd.",
+            "a ser fornecida (quantidade)",
+            "qty. a ser fornecida", "qtd. a ser fornecida",
+        )), None
     )
     df["quantidade"] = df[col_qtd].apply(br_to_float) if col_qtd else 1.0
     df = df[df["quantidade"] > 0].copy()
 
-    # Preço unitário da base limpa
-    if "Preço líquido" in df.columns:
+    # Valor total e unitário
+    # Prioridade 1: coluna de valor total direta — ME2M: "a ser fornecido (valor)"
+    col_val_total = next(
+        (c for c in df.columns if c.lower() in (
+            "a ser fornecido (valor)", "valor a ser fornecido",
+            "valor total", "net value", "valor líquido total",
+        )), None
+    )
+    if col_val_total:
+        df["valor_total_pedido"]   = df[col_val_total].apply(br_to_float)
+        df["valor_unitario_pedido"] = df["valor_total_pedido"] / df["quantidade"].replace(0, 1)
+    # Prioridade 2: Preço líquido / Unidade preço
+    elif "Preço líquido" in df.columns:
         preco_raw = df["Preço líquido"].apply(br_to_float)
         unidade_preco = pd.to_numeric(
             df.get("Unidade preço", pd.Series(1, index=df.index)),
             errors="coerce",
         ).fillna(1).replace(0, 1)
         df["valor_unitario_pedido"] = preco_raw / unidade_preco
+        df["valor_total_pedido"]    = df["quantidade"] * df["valor_unitario_pedido"]
+    # Prioridade 3: coluna já normalizada
     elif "valor_unitario" in df.columns:
         df["valor_unitario_pedido"] = df["valor_unitario"].apply(br_to_float)
+        df["valor_total_pedido"]    = df["quantidade"] * df["valor_unitario_pedido"]
     else:
         df["valor_unitario_pedido"] = 0.0
+        df["valor_total_pedido"]    = 0.0
 
     materiais_validos = set(df["material"].unique())
     print(f"  Base pedidos_abertos : {len(df)} linha(s), {len(materiais_validos)} material(is)")
@@ -1221,7 +1255,9 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
         df.loc[atrasados, "mes_remessa"] = mes_atual
 
     df_fut = df[df["mes_remessa"] >= mes_atual].copy()
-    df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
+    # valor_total_pedido já calculado acima; recalcula apenas se ausente
+    if "valor_total_pedido" not in df_fut.columns:
+        df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
 
     print(f"  Remessas futuras     : {len(df_fut)}")
     print(f"  Materiais únicos     : {df_fut['material'].nunique()}")
