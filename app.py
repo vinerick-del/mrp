@@ -426,6 +426,9 @@ if btn_processar:
                         _parcelas.append({
                             "origem"       : _row["origem"],
                             "material"     : _row["material"],
+                            "mes_emissao"  : _row.get("mes_pedido", "-"),
+                            "mes_entrega"  : _row.get("mes_entrega", "-"),
+                            "prazo_dias"   : _d,
                             "mes_pagamento": (_data_base + timedelta(days=_d)).strftime("%Y-%m"),
                             "valor_parcela": _vbase + (_resto if _i == _n - 1 else 0),
                         })
@@ -457,6 +460,7 @@ if btn_processar:
                 "politica_pag"     : politica_pag_carregada,
                 "vis_orcamentaria" : _vis_orc,
                 "vis_caixa"        : _vis_cx,
+                "detalhe_fluxo"    : _df_fluxo if _parcelas else pd.DataFrame(),
                 "log_sem_politica" : _log_sem_politica,
                 "rateio"        : df_rateio,
                 "alertas_rup"   : alertas_rup,
@@ -490,6 +494,7 @@ if "resultado" in st.session_state:
     contratos      = r["contratos"]
     vis_orc        = r.get("vis_orcamentaria", pd.DataFrame())
     vis_cx         = r.get("vis_caixa",        pd.DataFrame())
+    detalhe_fluxo  = r.get("detalhe_fluxo",   pd.DataFrame())
     log_sem_pol    = r.get("log_sem_politica", [])
 
     # ── Métricas resumo ───────────────────────────────────────────────────────
@@ -652,6 +657,37 @@ if "resultado" in st.session_state:
                         agg_cx_fmt[col] = agg_cx_fmt[col].apply(_fmt_brl_contabil)
                     st.dataframe(agg_cx_fmt, use_container_width=True)
 
+                    # ── Rastreio: Emissão → Entrega → Pagamento ───────────────
+                    with st.expander("🔍 Rastreio: Emissão → Entrega → Pagamento"):
+                        st.caption(
+                            "Cada linha representa uma parcela de pagamento. "
+                            "Pagamentos em 2026/2027 podem ter origem em pedidos emitidos em anos anteriores "
+                            "— rastreie pela coluna **Mês Emissão** (quando o PO foi criado) "
+                            "e **Mês Entrega** (quando o material chega ao estoque)."
+                        )
+                        if not detalhe_fluxo.empty:
+                            df_trace = (
+                                detalhe_fluxo
+                                .rename(columns={
+                                    "origem"       : "Origem",
+                                    "material"     : "Material",
+                                    "mes_emissao"  : "Mês Emissão",
+                                    "mes_entrega"  : "Mês Entrega",
+                                    "prazo_dias"   : "Prazo (dias)",
+                                    "mes_pagamento": "Mês Pagamento",
+                                    "valor_parcela": "Valor Parcela",
+                                })
+                                .sort_values(["Mês Pagamento", "Mês Entrega"])
+                                .reset_index(drop=True)
+                            )
+                            st.dataframe(
+                                df_trace.style.format(
+                                    {"Valor Parcela": _fmt_brl_contabil}, na_rep="-"
+                                ),
+                                use_container_width=True,
+                                height=400,
+                            )
+
                     with st.expander("⚠️ Log: Documentos sem Política (Aplicado Padrão 60/90 dias)"):
                         if log_sem_pol:
                             df_log = (
@@ -722,6 +758,10 @@ if "resultado" in st.session_state:
         dfs_excel["Visão Orçamentária"] = vis_orc
     if not vis_cx.empty:
         dfs_excel["Visão de Caixa"] = vis_cx
+    if not detalhe_fluxo.empty:
+        dfs_excel["Rastreio Pagamentos"] = detalhe_fluxo.sort_values(
+            ["mes_pagamento", "mes_entrega"]
+        ).reset_index(drop=True)
 
     try:
         excel_bytes = _gerar_excel(dfs_excel)
