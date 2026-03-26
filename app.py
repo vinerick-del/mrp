@@ -319,6 +319,114 @@ if btn_processar:
             # Alertas
             alertas_rup, alertas_cont = _calcular_alertas(df_mrp, df_ped, contratos)
 
+            # ── Cálculos Financeiros (independente de qual aba o usuário visita) ──
+            _linhas_fin: list[pd.DataFrame] = []
+
+            if not df_ped.empty:
+                _tmp = df_ped.copy()
+                _tmp["mes_pedido"]           = pd.to_datetime(_tmp["data_pedido"], format="%d/%m/%Y", errors="coerce").dt.to_period("M").astype(str)
+                _tmp["mes_entrega"]          = _tmp["periodo_entrega"]
+                _tmp["data_base_pagamento"]  = pd.to_datetime(_tmp["data_chegada"], format="%d/%m/%Y", errors="coerce")
+                _tmp["documento_referencia"] = None
+                _tmp["numero_pedido"]        = None
+                _tmp["origem"]               = "Novo Pedido (MRP)"
+                _tmp["valor_pedido"]         = _tmp["valor_total_pedido"]
+                _linhas_fin.append(_tmp[["origem","material","quantidade","valor_pedido",
+                                         "mes_pedido","mes_entrega","data_base_pagamento",
+                                         "documento_referencia","numero_pedido"]])
+
+            if not df_abertos_fut.empty:
+                _tmp2 = df_abertos_fut.copy()
+                if "valor_total_pedido" not in _tmp2.columns or _tmp2["valor_total_pedido"].fillna(0).sum() == 0:
+                    _abc_price = abc[["material","valor_unitario"]].drop_duplicates("material")
+                    _tmp2 = _tmp2.merge(_abc_price, on="material", how="left")
+                    _tmp2["valor_total_pedido"] = _tmp2["quantidade"] * _tmp2["valor_unitario"].fillna(0)
+                _tmp2["mes_pedido"]  = _tmp2["mes_pedido"].fillna("Já Comprometido") if "mes_pedido" in _tmp2.columns else "Já Comprometido"
+                _tmp2["mes_entrega"] = _tmp2["mes_remessa"]
+                _tmp2["data_base_pagamento"] = pd.to_datetime(_tmp2["mes_remessa"] + "-01", format="%Y-%m-%d", errors="coerce")
+                if "contrato" in _tmp2.columns:
+                    _tmp2["documento_referencia"] = _tmp2["contrato"].astype(str).str.strip()
+                elif "numero_pedido" in _tmp2.columns:
+                    _tmp2["documento_referencia"] = _tmp2["numero_pedido"].astype(str).str.strip()
+                else:
+                    _tmp2["documento_referencia"] = None
+                _tmp2["origem"]        = "Pedido Existente (SAP)"
+                _tmp2["valor_pedido"]  = _tmp2["valor_total_pedido"].fillna(0)
+                _tmp2["numero_pedido"] = _tmp2["numero_pedido"].astype(str).str.strip() if "numero_pedido" in _tmp2.columns else None
+                _linhas_fin.append(_tmp2[["origem","material","quantidade","valor_pedido",
+                                          "mes_pedido","mes_entrega","data_base_pagamento",
+                                          "documento_referencia","numero_pedido"]])
+
+            if not df_mb51.empty:
+                _tmp3 = df_mb51.copy()
+                _tmp3["mes_pedido"]          = _tmp3["mes_entrega"]
+                _tmp3["data_base_pagamento"] = pd.to_datetime(_tmp3["mes_entrega"] + "-01", format="%Y-%m-%d", errors="coerce")
+                _tmp3["documento_referencia"] = None
+                _tmp3["numero_pedido"]        = None
+                _tmp3["origem"]               = "Histórico Recebido (MB51)"
+                _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
+                                          "mes_pedido","mes_entrega","data_base_pagamento",
+                                          "documento_referencia","numero_pedido"]])
+
+            _df_fin = pd.concat(_linhas_fin, ignore_index=True) if _linhas_fin else pd.DataFrame()
+
+            # Visão Orçamentária
+            _vis_orc = pd.DataFrame()
+            if not _df_fin.empty:
+                _vis_orc = (
+                    _df_fin.groupby(["mes_pedido","origem"], as_index=False)["valor_pedido"]
+                    .sum()
+                    .pivot(index="mes_pedido", columns="origem", values="valor_pedido")
+                    .fillna(0).sort_index()
+                )
+                _vis_orc["Total"] = _vis_orc.sum(axis=1)
+
+            # Visão de Caixa — explodir parcelas de pagamento
+            _vis_cx = pd.DataFrame()
+            _log_sem_politica: list[dict] = []
+            if not _df_fin.empty:
+                _parcelas: list[dict] = []
+                for _, _row in _df_fin.iterrows():
+                    _data_base = _row["data_base_pagamento"]
+                    if pd.isna(_data_base):
+                        continue
+                    _contrato_ref = _row["documento_referencia"]
+                    _pedido_ref   = _row.get("numero_pedido")
+                    _dias = None
+                    if _contrato_ref and str(_contrato_ref) in politica_pag_carregada:
+                        _dias = politica_pag_carregada[str(_contrato_ref)]
+                    if _dias is None and _pedido_ref and str(_pedido_ref) in politica_pag_carregada:
+                        _dias = politica_pag_carregada[str(_pedido_ref)]
+                    if _dias is None:
+                        _dias = [60, 90]
+                        _log_sem_politica.append({
+                            "origem"      : _row["origem"],
+                            "material"    : _row["material"],
+                            "contrato"    : _contrato_ref,
+                            "pedido"      : _pedido_ref,
+                            "valor_pedido": _row["valor_pedido"],
+                        })
+                    _n          = len(_dias)
+                    _vbase      = _row["valor_pedido"] // _n
+                    _resto      = _row["valor_pedido"] - _vbase * _n
+                    for _i, _d in enumerate(_dias):
+                        _parcelas.append({
+                            "origem"       : _row["origem"],
+                            "material"     : _row["material"],
+                            "mes_pagamento": (_data_base + timedelta(days=_d)).strftime("%Y-%m"),
+                            "valor_parcela": _vbase + (_resto if _i == _n - 1 else 0),
+                        })
+                if _parcelas:
+                    _df_fluxo = pd.DataFrame(_parcelas)
+                    _vis_cx = (
+                        _df_fluxo
+                        .groupby(["mes_pagamento","origem"], as_index=False)["valor_parcela"]
+                        .sum()
+                        .pivot(index="mes_pagamento", columns="origem", values="valor_parcela")
+                        .fillna(0).sort_index()
+                    )
+                    _vis_cx["Total"] = _vis_cx.sum(axis=1)
+
             # Renomear colunas do MRP para o formato solicitado
             df_mrp_out = df_mrp.rename(columns={
                 "periodo"           : "mes",
@@ -329,11 +437,14 @@ if btn_processar:
                 "necessidade", "classe", "pedido_gerado"]]
 
             st.session_state["resultado"] = {
-                "mrp"           : df_mrp_out,
-                "pedidos"       : df_ped,
-                "abertos_fut"   : df_abertos_fut,
-                "historico_mb51": df_mb51,
-                "politica_pag"  : politica_pag_carregada,
+                "mrp"              : df_mrp_out,
+                "pedidos"          : df_ped,
+                "abertos_fut"      : df_abertos_fut,
+                "historico_mb51"   : df_mb51,
+                "politica_pag"     : politica_pag_carregada,
+                "vis_orcamentaria" : _vis_orc,
+                "vis_caixa"        : _vis_cx,
+                "log_sem_politica" : _log_sem_politica,
                 "rateio"        : df_rateio,
                 "alertas_rup"   : alertas_rup,
                 "alertas_cont"  : alertas_cont,
@@ -356,14 +467,17 @@ if btn_processar:
 # ─────────────────────────────────────────────────────────────────────────────
 if "resultado" in st.session_state:
     r = st.session_state["resultado"]
-    df_mrp        = r["mrp"]
-    df_ped        = r["pedidos"]
-    df_abertos_fut= r.get("abertos_fut", pd.DataFrame())
-    df_mb51       = r.get("historico_mb51", pd.DataFrame())
-    df_rateio     = r["rateio"]
-    rup           = r["alertas_rup"]
-    cont          = r["alertas_cont"]
-    contratos     = r["contratos"]
+    df_mrp         = r["mrp"]
+    df_ped         = r["pedidos"]
+    df_abertos_fut = r.get("abertos_fut", pd.DataFrame())
+    df_mb51        = r.get("historico_mb51", pd.DataFrame())
+    df_rateio      = r["rateio"]
+    rup            = r["alertas_rup"]
+    cont           = r["alertas_cont"]
+    contratos      = r["contratos"]
+    vis_orc        = r.get("vis_orcamentaria", pd.DataFrame())
+    vis_cx         = r.get("vis_caixa",        pd.DataFrame())
+    log_sem_pol    = r.get("log_sem_politica", [])
 
     # ── Métricas resumo ───────────────────────────────────────────────────────
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -492,79 +606,9 @@ if "resultado" in st.session_state:
 
     with tab_fin:
         st.subheader("Visão Financeira")
-
-        # ── Novos pedidos MRP ─────────────────────────────────────────────────
-        # data_base = data_chegada calculada pelo lead time
-        linhas_mrp = []
-        if not df_ped.empty:
-            tmp = df_ped.copy()
-            tmp["mes_pedido"]           = pd.to_datetime(tmp["data_pedido"], format="%d/%m/%Y", errors="coerce").dt.to_period("M").astype(str)
-            tmp["mes_entrega"]          = tmp["periodo_entrega"]
-            tmp["data_base_pagamento"]  = pd.to_datetime(tmp["data_chegada"], format="%d/%m/%Y", errors="coerce")
-            tmp["documento_referencia"] = None
-            tmp["numero_pedido"]        = None
-            tmp["origem"]               = "Novo Pedido (MRP)"
-            tmp["valor_pedido"]         = tmp["valor_total_pedido"]
-            linhas_mrp = [tmp[["origem", "material", "quantidade", "valor_pedido",
-                                "mes_pedido", "mes_entrega",
-                                "data_base_pagamento", "documento_referencia", "numero_pedido"]]]
-
-        # ── Pedidos existentes SAP ────────────────────────────────────────────
-        # data_base = data de remessa (previsão de entrega)
-        linhas_sap = []
-        if not df_abertos_fut.empty:
-            tmp2 = df_abertos_fut.copy()
-            if "valor_total_pedido" not in tmp2.columns or tmp2["valor_total_pedido"].fillna(0).sum() == 0:
-                abc_price = r["abc"][["material", "valor_unitario"]].drop_duplicates("material")
-                tmp2 = tmp2.merge(abc_price, on="material", how="left")
-                tmp2["valor_total_pedido"] = tmp2["quantidade"] * tmp2["valor_unitario"].fillna(0)
-            tmp2["mes_pedido"]  = tmp2.get("mes_pedido", pd.Series(["Já Comprometido"] * len(tmp2), index=tmp2.index))
-            tmp2["mes_pedido"]  = tmp2["mes_pedido"].fillna("Já Comprometido")
-            tmp2["mes_entrega"] = tmp2["mes_remessa"]
-            tmp2["data_base_pagamento"]  = pd.to_datetime(
-                tmp2["mes_remessa"] + "-01", format="%Y-%m-%d", errors="coerce"
-            )
-            # Prioridade: contrato (mais estável para política) > nº pedido
-            if "contrato" in tmp2.columns:
-                tmp2["documento_referencia"] = tmp2["contrato"].astype(str).str.strip()
-            elif "numero_pedido" in tmp2.columns:
-                tmp2["documento_referencia"] = tmp2["numero_pedido"].astype(str).str.strip()
-            else:
-                tmp2["documento_referencia"] = None
-            tmp2["origem"]        = "Pedido Existente (SAP)"
-            tmp2["valor_pedido"]  = tmp2["valor_total_pedido"].fillna(0)
-            tmp2["numero_pedido"] = tmp2["numero_pedido"].astype(str).str.strip() if "numero_pedido" in tmp2.columns else None
-            linhas_sap = [tmp2[["origem", "material", "quantidade", "valor_pedido",
-                                 "mes_pedido", "mes_entrega",
-                                 "data_base_pagamento", "documento_referencia", "numero_pedido"]]]
-
-        # ── Histórico realizado MB51 ──────────────────────────────────────────
-        # data_base = data de lançamento (1º dia do mês, pois já agregamos)
-        linhas_mb51 = []
-        if not df_mb51.empty:
-            tmp3 = df_mb51.copy()
-            # mes_pedido = mes_entrega: para histórico já recebido,
-            # o mês de recebimento é o mês do compromisso orçamentário
-            tmp3["mes_pedido"]          = tmp3["mes_entrega"]
-            tmp3["data_base_pagamento"] = pd.to_datetime(
-                tmp3["mes_entrega"] + "-01", format="%Y-%m-%d", errors="coerce"
-            )
-            tmp3["documento_referencia"] = None
-            tmp3["numero_pedido"]        = None
-            tmp3["origem"]               = "Histórico Recebido (MB51)"
-            linhas_mb51 = [tmp3[["origem", "material", "quantidade", "valor_pedido",
-                                  "mes_pedido", "mes_entrega",
-                                  "data_base_pagamento", "documento_referencia", "numero_pedido"]]]
-
-        todas = linhas_mrp + linhas_sap + linhas_mb51
-        if not todas:
+        if vis_orc.empty and vis_cx.empty:
             st.info("Nenhum dado financeiro disponível.")
         else:
-            df_fin = pd.concat(todas, ignore_index=True)
-
-            # Política de pagamento: {documento_referencia: [dias]}
-            politica_pag: dict[str, list[int]] = r.get("politica_pag", {})
-
             subtab_orc, subtab_cx = st.tabs([
                 "📊 Visão Orçamentária (Emissão)",
                 "💸 Visão de Caixa (Desembolso Real)",
@@ -572,108 +616,39 @@ if "resultado" in st.session_state:
 
             with subtab_orc:
                 st.caption("Compromisso financeiro agrupado por mês de emissão do pedido")
-                agg = (df_fin.groupby(["mes_pedido", "origem"], as_index=False)["valor_pedido"]
-                       .sum()
-                       .pivot(index="mes_pedido", columns="origem", values="valor_pedido")
-                       .fillna(0)
-                       .sort_index())
-                agg["Total"] = agg.sum(axis=1)
-                _chart_financeiro(agg, "Compromisso por Mês de Emissão")
-                agg_fmt = agg.copy()
-                for col in agg_fmt.columns:
-                    agg_fmt[col] = agg_fmt[col].apply(_fmt_brl_contabil)
-                st.dataframe(agg_fmt, use_container_width=True)
-                # Guarda para exportação Excel
-                st.session_state["_vis_orcamentaria"] = agg
+                if vis_orc.empty:
+                    st.info("Sem dados orçamentários.")
+                else:
+                    _chart_financeiro(vis_orc, "Compromisso por Mês de Emissão")
+                    agg_fmt = vis_orc.copy()
+                    for col in agg_fmt.columns:
+                        agg_fmt[col] = agg_fmt[col].apply(_fmt_brl_contabil)
+                    st.dataframe(agg_fmt, use_container_width=True)
 
             with subtab_cx:
                 st.caption(
                     "Desembolso previsto agrupado por mês de pagamento · "
                     "política padrão: 50% em 60 dias + 50% em 90 dias após recebimento"
                 )
-
-                # ── Explodir parcelas de pagamento ────────────────────────────
-                log_sem_politica: list[dict] = []
-                parcelas: list[dict] = []
-
-                for _, row in df_fin.iterrows():
-                    data_base = row["data_base_pagamento"]
-                    if pd.isna(data_base):
-                        continue  # sem data de referência, não é possível calcular
-
-                    contrato_ref = row["documento_referencia"]   # contrato SAP
-                    pedido_ref   = row.get("numero_pedido")      # nº pedido SAP
-                    dias_parcelas = None
-
-                    # 1) busca pelo contrato
-                    if contrato_ref and str(contrato_ref) in politica_pag:
-                        dias_parcelas = politica_pag[str(contrato_ref)]
-
-                    # 2) se não achou, busca pelo nº pedido
-                    if dias_parcelas is None and pedido_ref and str(pedido_ref) in politica_pag:
-                        dias_parcelas = politica_pag[str(pedido_ref)]
-
-                    # 3) fallback: política padrão 60/90 dias
-                    if dias_parcelas is None:
-                        dias_parcelas = [60, 90]
-                        log_sem_politica.append({
-                            "origem"    : row["origem"],
-                            "material"  : row["material"],
-                            "contrato"  : contrato_ref,
-                            "pedido"    : pedido_ref,
-                            "valor_pedido": row["valor_pedido"],
-                        })
-
-                    # 3) gerar parcelas — soma bate exatamente com valor_pedido
-                    n = len(dias_parcelas)
-                    valor_base   = row["valor_pedido"] // n  # parte inteira
-                    resto        = row["valor_pedido"] -  valor_base * n  # centavos restantes
-
-                    for idx, d in enumerate(dias_parcelas):
-                        data_pag    = data_base + timedelta(days=d)
-                        mes_pag     = data_pag.strftime("%Y-%m")
-                        valor_parc  = valor_base + (resto if idx == n - 1 else 0)
-                        parcelas.append({
-                            "origem"       : row["origem"],
-                            "material"     : row["material"],
-                            "mes_pagamento": mes_pag,
-                            "valor_parcela": valor_parc,
-                        })
-
-                if not parcelas:
+                if vis_cx.empty:
                     st.info("Nenhuma parcela de pagamento calculada.")
                 else:
-                    df_fluxo = pd.DataFrame(parcelas)
-
-                    agg_cx = (
-                        df_fluxo
-                        .groupby(["mes_pagamento", "origem"], as_index=False)["valor_parcela"]
-                        .sum()
-                        .pivot(index="mes_pagamento", columns="origem", values="valor_parcela")
-                        .fillna(0)
-                        .sort_index()
-                    )
-                    agg_cx["Total"] = agg_cx.sum(axis=1)
-                    _chart_financeiro(agg_cx, "Desembolso por Mês de Pagamento")
-                    agg_cx_fmt = agg_cx.copy()
+                    _chart_financeiro(vis_cx, "Desembolso por Mês de Pagamento")
+                    agg_cx_fmt = vis_cx.copy()
                     for col in agg_cx_fmt.columns:
                         agg_cx_fmt[col] = agg_cx_fmt[col].apply(_fmt_brl_contabil)
                     st.dataframe(agg_cx_fmt, use_container_width=True)
-                    # Guarda para exportação Excel
-                    st.session_state["_vis_caixa"] = agg_cx
 
                     with st.expander("⚠️ Log: Documentos sem Política (Aplicado Padrão 60/90 dias)"):
-                        if log_sem_politica:
+                        if log_sem_pol:
                             df_log = (
-                                pd.DataFrame(log_sem_politica)
+                                pd.DataFrame(log_sem_pol)
                                 .drop_duplicates()
                                 .reset_index(drop=True)
                             )
                             st.caption(f"{len(df_log)} documento(s) usaram a política padrão [60, 90] dias.")
                             st.dataframe(
-                                df_log.style.format(
-                                    {"valor_pedido": _fmt_brl_contabil}, na_rep="-"
-                                ),
+                                df_log.style.format({"valor_pedido": _fmt_brl_contabil}, na_rep="-"),
                                 use_container_width=True,
                             )
                         else:
@@ -729,11 +704,11 @@ if "resultado" in st.session_state:
         dfs_excel["Alertas Ruptura"] = rup
     if not cont.empty:
         dfs_excel["Contrato Insuficiente"] = cont
-    # Visão Financeira — adicionadas quando a aba é visitada
-    if "_vis_orcamentaria" in st.session_state:
-        dfs_excel["Visão Orçamentária"] = st.session_state["_vis_orcamentaria"]
-    if "_vis_caixa" in st.session_state:
-        dfs_excel["Visão de Caixa"] = st.session_state["_vis_caixa"]
+    # Visão Financeira — sempre disponíveis (computadas no processamento)
+    if not vis_orc.empty:
+        dfs_excel["Visão Orçamentária"] = vis_orc
+    if not vis_cx.empty:
+        dfs_excel["Visão de Caixa"] = vis_cx
 
     try:
         excel_bytes = _gerar_excel(dfs_excel)

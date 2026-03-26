@@ -1040,49 +1040,116 @@ def passo_3_estoque() -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPER: lookup de colunas de documento/cronograma no arquivo REMESSAS_SAP
+# ─────────────────────────────────────────────────────────────────────────────
+def _ler_remessas_lookup(source) -> pd.DataFrame:
+    """
+    Lê REMESSAS_SAP e devolve apenas as colunas necessárias para enriquecer
+    pedidos_abertos.csv:
+        material | data_remessa | numero_pedido | contrato | mes_pedido
+
+    • Linhas com Código de eliminação == 'L' são descartadas.
+    • Linhas sem data de remessa são descartadas.
+    • Deduplica por (material, numero_pedido) mantendo a entrega mais próxima.
+    """
+    df = _ler_sap_tabsep(source)
+    df.columns = df.columns.str.strip()
+
+    col_mat  = next((c for c in df.columns if c.lower() == "material"), df.columns[0])
+    col_data = (
+        "Data de remessa"   if "Data de remessa"   in df.columns else
+        "Data do documento" if "Data do documento" in df.columns else None
+    )
+    col_num  = "Documento de compras" if "Documento de compras" in df.columns else None
+    col_cont = "Contrato básico"      if "Contrato básico"      in df.columns else None
+    col_elim = "Código de eliminação" if "Código de eliminação" in df.columns else None
+    col_doc  = "Data do documento"    if "Data do documento"    in df.columns else None
+
+    r = pd.DataFrame()
+    r["material"] = df[col_mat].astype(str).str.strip()
+
+    r["data_remessa"] = (
+        pd.to_datetime(df[col_data], format="%d/%m/%Y", errors="coerce")
+        if col_data else pd.NaT
+    )
+    r["numero_pedido"] = df[col_num].astype(str).str.strip()  if col_num  else None
+    r["contrato"]      = df[col_cont].astype(str).str.strip() if col_cont else None
+
+    # mes_pedido = mês de emissão do pedido (Data do documento)
+    if col_doc and col_doc != col_data:
+        r["mes_pedido"] = (
+            pd.to_datetime(df[col_doc], format="%d/%m/%Y", errors="coerce")
+            .dt.to_period("M").astype(str)
+        )
+    else:
+        r["mes_pedido"] = None
+
+    # Filtrar código 'L'
+    if col_elim:
+        r = r[df[col_elim].fillna("").str.strip().str.upper() != "L"]
+
+    # Descartar sem data
+    r = r.dropna(subset=["data_remessa"])
+
+    # Deduplica mantendo entrega mais próxima por (material, numero_pedido)
+    group = ["material"] + (["numero_pedido"] if col_num else [])
+    r = r.sort_values("data_remessa").drop_duplicates(subset=group, keep="first")
+
+    print(f"  Lookup SAP           : {len(r)} registro(s) em {r['material'].nunique()} material(is)")
+    return r.reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PASSO 4: LER PEDIDOS EM ABERTO (ENTRADAS FUTURAS)
 # ─────────────────────────────────────────────────────────────────────────────
 def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Retorna:
       entradas_consolidadas — agrupado por material+mês (para o loop MRP)
-      df_abertos_futuros    — linhas originais filtradas (para rateio)
+      df_abertos_futuros    — linhas originais filtradas (para rateio e visão financeira)
+
+    Regra de ouro:
+      • BASE PRINCIPAL : pedidos_abertos.csv — materiais e quantidades válidas para o estoque
+      • LOOKUP / JOIN  : REMESSAS_SAP — fornece data_remessa, numero_pedido, contrato, mes_pedido
+      • Materiais do SAP sem correspondência em pedidos_abertos são descartados
     """
     separador("PASSO 4 │ PEDIDOS EM ABERTO — ENTRADAS FUTURAS")
 
-    # ── Detecção de formato: remessas SAP têm prioridade sobre pedidos_abertos.csv ─
+    ped_path = os.path.join(DIR_DADOS, "pedidos_abertos.csv")
     sap_path = os.path.join(DIR_DADOS, ARQ_REMESSAS_SAP)
-    if os.path.exists(sap_path):
-        return ler_remessas_sap(sap_path)   # já retorna (entradas, df_fut) no mesmo contrato
 
-    df = pd.read_csv(
-        os.path.join(DIR_DADOS, "pedidos_abertos.csv"),
-        parse_dates=["data_remessa"],
+    tem_ped = os.path.exists(ped_path)
+    tem_sap = os.path.exists(sap_path)
+
+    if not tem_ped and not tem_sap:
+        print("  ⚠ Nenhuma fonte de pedidos encontrada.")
+        return pd.DataFrame(columns=["material", "mes", "qtd_entrada"]), pd.DataFrame()
+
+    if not tem_ped:
+        # Modo legado: sem pedidos_abertos.csv, usa SAP diretamente
+        print("  ℹ pedidos_abertos.csv não encontrado — modo legado REMESSAS_SAP")
+        return ler_remessas_sap(sap_path)
+
+    # ── BASE PRINCIPAL: pedidos_abertos.csv ───────────────────────────────────
+    df = pd.read_csv(ped_path, dtype=str)
+    df.columns = df.columns.str.strip()
+
+    col_mat = next(
+        (c for c in df.columns if c.lower() in ("material", "cod. material", "código material")),
+        df.columns[0],
     )
+    df = df.rename(columns={col_mat: "material"})
+    df["material"] = df["material"].astype(str).str.strip()
 
-    # REGRA: usar EXCLUSIVAMENTE data_remessa
-    df["mes_remessa"] = df["data_remessa"].dt.to_period("M").astype(str)
-
-    # Colunas financeiras opcionais (presentes em exports SAP)
-    if "data_pedido" in df.columns:
-        df["mes_pedido"] = pd.to_datetime(df["data_pedido"], errors="coerce").dt.to_period("M").astype(str)
-    else:
-        df["mes_pedido"] = None
-
-    # Nº pedido e contrato — necessários para vincular política de pagamento
-    df["numero_pedido"] = (
-        df["Documento de compras"].astype(str).str.strip()
-        if "Documento de compras" in df.columns else None
+    col_qtd = next(
+        (c for c in df.columns if c.lower() in ("quantidade", "qty", "qtd", "qtd.")), None
     )
-    df["contrato"] = (
-        df["Contrato básico"].astype(str).str.strip()
-        if "Contrato básico" in df.columns else None
-    )
+    df["quantidade"] = df[col_qtd].apply(br_to_float) if col_qtd else 1.0
+    df = df[df["quantidade"] > 0].copy()
 
-    # Preço: tenta "Preço líquido" (SAP) com br_to_float e divisão por "Unidade preço"
-    # Depois tenta coluna já normalizada "valor_unitario"; fallback = 0
+    # Preço unitário da base limpa
     if "Preço líquido" in df.columns:
-        preco_raw     = df["Preço líquido"].apply(br_to_float)
+        preco_raw = df["Preço líquido"].apply(br_to_float)
         unidade_preco = pd.to_numeric(
             df.get("Unidade preço", pd.Series(1, index=df.index)),
             errors="coerce",
@@ -1093,18 +1160,73 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     else:
         df["valor_unitario_pedido"] = 0.0
 
-    hoje      = date.today()
-    mes_atual = str(pd.Period(hoje, "M"))
+    materiais_validos = set(df["material"].unique())
+    print(f"  Base pedidos_abertos : {len(df)} linha(s), {len(materiais_validos)} material(is)")
+
+    # ── LOOKUP: REMESSAS_SAP → data_remessa, numero_pedido, contrato, mes_pedido ─
+    if tem_sap:
+        lookup = _ler_remessas_lookup(sap_path)
+        # Restringir lookup apenas a materiais que existem na base limpa
+        lookup = lookup[lookup["material"].isin(materiais_validos)]
+        print(f"  Lookup SAP (filtrado): {len(lookup)} registro(s)")
+
+        # Chave de join: (material + numero_pedido) se ambos disponíveis; senão só material
+        has_num_ped_base = (
+            "numero_pedido" in df.columns
+            and df["numero_pedido"].notna().any()
+        )
+        has_num_ped_sap = lookup["numero_pedido"].notna().any()
+
+        if has_num_ped_base and has_num_ped_sap:
+            df["numero_pedido"] = df["numero_pedido"].astype(str).str.strip()
+            df = df.merge(
+                lookup[["material", "numero_pedido", "data_remessa", "contrato", "mes_pedido"]],
+                on=["material", "numero_pedido"],
+                how="left",
+            )
+        else:
+            df = df.merge(
+                lookup[["material", "data_remessa", "numero_pedido", "contrato", "mes_pedido"]],
+                on="material",
+                how="left",
+            )
+
+        sem_data = df["data_remessa"].isna().sum()
+        if sem_data:
+            print(f"  ⚠ {sem_data} linha(s) sem data no lookup SAP — descartadas")
+    else:
+        # Sem SAP: usa coluna de data já presente no CSV (se houver)
+        col_dt = next(
+            (c for c in df.columns if "remessa" in c.lower() and "data" in c.lower()), None
+        ) or next(
+            (c for c in df.columns if "data" in c.lower()), None
+        )
+        df["data_remessa"] = (
+            pd.to_datetime(df[col_dt], errors="coerce") if col_dt else pd.NaT
+        )
+        for col in ("numero_pedido", "contrato", "mes_pedido"):
+            if col not in df.columns:
+                df[col] = None
+
+    # ── Filtrar linhas sem data de entrega ────────────────────────────────────
+    df = df.dropna(subset=["data_remessa"]).copy()
+
+    # ── Mês de remessa e realocação de atrasos ────────────────────────────────
+    df["mes_remessa"] = df["data_remessa"].dt.to_period("M").astype(str)
+    mes_atual = str(pd.Period(date.today(), "M"))
+
+    atrasados = df["mes_remessa"] < mes_atual
+    if atrasados.any():
+        print(f"  Realocar atrasados   : {atrasados.sum()} linha(s) → {mes_atual}")
+        df.loc[atrasados, "mes_remessa"] = mes_atual
 
     df_fut = df[df["mes_remessa"] >= mes_atual].copy()
     df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
 
-    print(f"  Pedidos em aberto     : {len(df)}")
-    print(f"  Mês de referência     : {mes_atual}")
-    print(f"  Remessas futuras      : {len(df_fut)}")
-    print()
+    print(f"  Remessas futuras     : {len(df_fut)}")
+    print(f"  Materiais únicos     : {df_fut['material'].nunique()}")
     if not df_fut.empty:
-        print(df_fut[["numero_pedido", "material", "quantidade", "data_remessa"]].to_string(index=False))
+        print(df_fut[["material", "quantidade", "mes_remessa"]].to_string(index=False))
 
     entradas = (
         df_fut.groupby(["material", "mes_remessa"], as_index=False)["quantidade"]
