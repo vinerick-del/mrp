@@ -197,18 +197,20 @@ with st.sidebar:
     f_demanda   = st.file_uploader("① Demanda (DTM format)", type=["csv", "txt"],
                                    help="Arquivo demanda_dtm_raw.csv — separado por ';'")
     f_remessas  = st.file_uploader("② Remessas SAP (entregas futuras)", type=["csv", "txt"],
-                                   help="Exportação ME2M / ME9F — separado por TAB")
-    f_estoque   = st.file_uploader("③ Estoque SAP (multi-depósito)", type=["csv", "txt"],
+                                   help="Exportação ME2M / ME9F — separado por TAB (usado como lookup de datas e nºs de documento)")
+    f_pedidos   = st.file_uploader("③ Pedidos em Aberto (base limpa)", type=["csv", "txt"],
+                                   help="pedidos_abertos.csv — base principal de materiais e quantidades válidas para o estoque")
+    f_estoque   = st.file_uploader("④ Estoque SAP (multi-depósito)", type=["csv", "txt"],
                                    help="Exportação MB52 / MMBE — separado por TAB")
-    f_contratos = st.file_uploader("④ Contratos SAP (framework)", type=["csv", "txt"],
+    f_contratos = st.file_uploader("⑤ Contratos SAP (framework)", type=["csv", "txt"],
                                    help="Exportação ME3M / ME3N — separado por TAB")
-    f_materiais = st.file_uploader("⑤ Materiais (catálogo SAP)", type=["csv", "txt"],
+    f_materiais = st.file_uploader("⑥ Materiais (catálogo SAP)", type=["csv", "txt"],
                                    help="Exportação MM60 / MM03 — CÓDIGO | DESCRIÇÃO | VALOR UNITÁRIO")
-    f_lead      = st.file_uploader("⑥ Lead Times (opcional)", type=["csv"],
+    f_lead      = st.file_uploader("⑦ Lead Times (opcional)", type=["csv"],
                                    help="CSV simples: material,lead_time_dias")
-    f_mb51      = st.file_uploader("⑦ Histórico MB51 (Entradas 101/102)", type=["csv", "txt"],
+    f_mb51      = st.file_uploader("⑧ Histórico MB51 (Entradas 101/102)", type=["csv", "txt"],
                                    help="Relatório MB51 — movimentos 101 (recebimento) e 102 (estorno)")
-    f_politica  = st.file_uploader("⑧ Política de Pagamento", type=["csv", "txt"],
+    f_politica  = st.file_uploader("⑨ Política de Pagamento", type=["csv", "txt"],
                                    help="CSV: documento (contrato ou nº pedido) | dias_parcela_1 | dias_parcela_2 ...")
 
     st.divider()
@@ -252,6 +254,7 @@ if btn_processar:
             ok = all([
                 _salvar_upload(f_demanda,   ARQUIVO_DEMANDA_RAW),
                 _salvar_upload(f_remessas,  "remessas_sap.csv"),
+                _salvar_upload(f_pedidos,   "pedidos_abertos.csv"),
                 _salvar_upload(f_estoque,   "estoque_sap.csv"),
                 _salvar_upload(f_contratos, "contratos_sap.csv"),
                 _salvar_upload(f_materiais, "materiais.csv"),
