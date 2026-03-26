@@ -437,11 +437,12 @@ if "resultado" in st.session_state:
             tmp["mes_entrega"]          = tmp["periodo_entrega"]
             tmp["data_base_pagamento"]  = pd.to_datetime(tmp["data_chegada"], format="%d/%m/%Y", errors="coerce")
             tmp["documento_referencia"] = None
+            tmp["numero_pedido"]        = None
             tmp["origem"]               = "Novo Pedido (MRP)"
             tmp["valor_pedido"]         = tmp["valor_total_pedido"]
             linhas_mrp = [tmp[["origem", "material", "quantidade", "valor_pedido",
                                 "mes_pedido", "mes_entrega",
-                                "data_base_pagamento", "documento_referencia"]]]
+                                "data_base_pagamento", "documento_referencia", "numero_pedido"]]]
 
         # ── Pedidos existentes SAP ────────────────────────────────────────────
         # data_base = data de remessa (previsão de entrega)
@@ -465,11 +466,12 @@ if "resultado" in st.session_state:
                 tmp2["documento_referencia"] = tmp2["numero_pedido"].astype(str).str.strip()
             else:
                 tmp2["documento_referencia"] = None
-            tmp2["origem"]      = "Pedido Existente (SAP)"
-            tmp2["valor_pedido"]= tmp2["valor_total_pedido"].fillna(0)
+            tmp2["origem"]        = "Pedido Existente (SAP)"
+            tmp2["valor_pedido"]  = tmp2["valor_total_pedido"].fillna(0)
+            tmp2["numero_pedido"] = tmp2["numero_pedido"].astype(str).str.strip() if "numero_pedido" in tmp2.columns else None
             linhas_sap = [tmp2[["origem", "material", "quantidade", "valor_pedido",
                                  "mes_pedido", "mes_entrega",
-                                 "data_base_pagamento", "documento_referencia"]]]
+                                 "data_base_pagamento", "documento_referencia", "numero_pedido"]]]
 
         # ── Histórico realizado MB51 ──────────────────────────────────────────
         # data_base = data de lançamento (1º dia do mês, pois já agregamos)
@@ -481,10 +483,11 @@ if "resultado" in st.session_state:
                 tmp3["mes_entrega"] + "-01", format="%Y-%m-%d", errors="coerce"
             )
             tmp3["documento_referencia"] = None
-            tmp3["origem"]              = "Histórico Recebido (MB51)"
+            tmp3["numero_pedido"]        = None
+            tmp3["origem"]               = "Histórico Recebido (MB51)"
             linhas_mb51 = [tmp3[["origem", "material", "quantidade", "valor_pedido",
                                   "mes_pedido", "mes_entrega",
-                                  "data_base_pagamento", "documento_referencia"]]]
+                                  "data_base_pagamento", "documento_referencia", "numero_pedido"]]]
 
         todas = linhas_mrp + linhas_sap + linhas_mb51
         if not todas:
@@ -530,21 +533,27 @@ if "resultado" in st.session_state:
                     if pd.isna(data_base):
                         continue  # sem data de referência, não é possível calcular
 
-                    doc_ref = row["documento_referencia"]
+                    contrato_ref = row["documento_referencia"]   # contrato SAP
+                    pedido_ref   = row.get("numero_pedido")      # nº pedido SAP
                     dias_parcelas = None
 
-                    # 1) busca por contrato/pedido na política cadastrada
-                    if doc_ref and str(doc_ref) in politica_pag:
-                        dias_parcelas = politica_pag[str(doc_ref)]
+                    # 1) busca pelo contrato
+                    if contrato_ref and str(contrato_ref) in politica_pag:
+                        dias_parcelas = politica_pag[str(contrato_ref)]
 
-                    # 2) fallback: política padrão 60/90 dias
+                    # 2) se não achou, busca pelo nº pedido
+                    if dias_parcelas is None and pedido_ref and str(pedido_ref) in politica_pag:
+                        dias_parcelas = politica_pag[str(pedido_ref)]
+
+                    # 3) fallback: política padrão 60/90 dias
                     if dias_parcelas is None:
                         dias_parcelas = [60, 90]
                         log_sem_politica.append({
-                            "origem"               : row["origem"],
-                            "material"             : row["material"],
-                            "documento_referencia" : doc_ref,
-                            "valor_pedido"         : row["valor_pedido"],
+                            "origem"    : row["origem"],
+                            "material"  : row["material"],
+                            "contrato"  : contrato_ref,
+                            "pedido"    : pedido_ref,
+                            "valor_pedido": row["valor_pedido"],
                         })
 
                     # 3) gerar parcelas — soma bate exatamente com valor_pedido
