@@ -1131,7 +1131,7 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
         return ler_remessas_sap(sap_path)
 
     # ── BASE PRINCIPAL: pedidos_abertos.csv ───────────────────────────────────
-    df = pd.read_csv(ped_path, dtype=str)
+    df = _ler_sap_tabsep(ped_path)
     df.columns = df.columns.str.strip()
 
     col_mat = next(
