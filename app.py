@@ -30,6 +30,7 @@ from mrp import (
     ler_lead_times,
     ler_materiais,
     ler_historico_mb51,
+    ler_politica_pagamento,
     derivar_rateio_da_demanda,
     transformar_demanda_dtm,
     ARQUIVO_DEMANDA_RAW,
@@ -147,6 +148,8 @@ with st.sidebar:
                                    help="CSV simples: material,lead_time_dias")
     f_mb51      = st.file_uploader("⑦ Histórico MB51 (Entradas 101/102)", type=["csv", "txt"],
                                    help="Relatório MB51 — movimentos 101 (recebimento) e 102 (estorno)")
+    f_politica  = st.file_uploader("⑧ Política de Pagamento", type=["csv", "txt"],
+                                   help="CSV: documento (contrato ou nº pedido) | dias_parcela_1 | dias_parcela_2 ...")
 
     st.divider()
     usar_dados_demo = st.checkbox("Usar dados existentes em data/", value=True,
@@ -194,6 +197,7 @@ if btn_processar:
                 _salvar_upload(f_materiais, "materiais.csv"),
                 _salvar_upload(f_lead,      "lead_times.csv"),
                 _salvar_upload(f_mb51,      "historico_mb51.csv"),
+                _salvar_upload(f_politica,  "politica_pagamento.csv"),
             ])
             if not ok:
                 st.stop()
@@ -245,6 +249,13 @@ if btn_processar:
             mb51_path = os.path.join(DIR_DADOS, "historico_mb51.csv")
             df_mb51 = ler_historico_mb51(mb51_path) if os.path.exists(mb51_path) else pd.DataFrame()
 
+            # ── Política de Pagamento (opcional) ─────────────────────────────
+            politica_path = os.path.join(DIR_DADOS, "politica_pagamento.csv")
+            politica_pag_carregada: dict[str, list[int]] = (
+                ler_politica_pagamento(politica_path)
+                if os.path.exists(politica_path) else {}
+            )
+
             # Alertas
             alertas_rup, alertas_cont = _calcular_alertas(df_mrp, df_ped, contratos)
 
@@ -262,6 +273,7 @@ if btn_processar:
                 "pedidos"       : df_ped,
                 "abertos_fut"   : df_abertos_fut,
                 "historico_mb51": df_mb51,
+                "politica_pag"  : politica_pag_carregada,
                 "rateio"        : df_rateio,
                 "alertas_rup"   : alertas_rup,
                 "alertas_cont"  : alertas_cont,
@@ -496,8 +508,7 @@ if "resultado" in st.session_state:
             df_fin = pd.concat(todas, ignore_index=True)
 
             # Política de pagamento: {documento_referencia: [dias]}
-            # Populado futuramente via arquivo de política; hoje fallback 60/90 para tudo
-            politica_pag: dict[str, list[int]] = {}
+            politica_pag: dict[str, list[int]] = r.get("politica_pag", {})
 
             subtab_orc, subtab_cx = st.tabs([
                 "📊 Visão Orçamentária (Emissão)",

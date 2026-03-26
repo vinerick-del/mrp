@@ -662,6 +662,71 @@ def ler_lead_times(source) -> dict:
     return lt_dict
 
 
+# ── Parser: Política de Pagamento ─────────────────────────────────────────────
+def ler_politica_pagamento(source) -> dict:
+    """
+    Lê CSV com política de pagamento por contrato ou nº de pedido.
+
+    Formato esperado (separador ';' ou ','):
+        documento ; dias_1 ; dias_2 ; ...
+    ou com cabeçalho flexível:
+        contrato/pedido | parcela_1 | parcela_2 | ...
+
+    Retorna dict  {str(documento): [int, int, ...]}
+    Documentos sem dias válidos são ignorados.
+    """
+    separador("PARSER │ POLÍTICA DE PAGAMENTO")
+    try:
+        if hasattr(source, "seek"):
+            source.seek(0)
+        # tenta detectar separador
+        raw = source.read() if hasattr(source, "read") else open(source, "rb").read()
+        texto = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        sep = ";" if texto.count(";") >= texto.count(",") else ","
+        import io
+        df = pd.read_csv(io.StringIO(texto), sep=sep, dtype=str)
+    except Exception as exc:
+        print(f"  ⚠ Não foi possível ler política de pagamento: {exc}")
+        return {}
+
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    # Coluna do documento (contrato ou pedido)
+    col_doc = None
+    for c in ["documento", "contrato", "pedido", "numero_pedido", "contrato_pedido", "doc"]:
+        if c in df.columns:
+            col_doc = c
+            break
+    if col_doc is None:
+        # Usa a primeira coluna
+        col_doc = df.columns[0]
+
+    # Colunas de dias: todas as numéricas restantes
+    cols_dias = [c for c in df.columns if c != col_doc]
+
+    politica: dict[str, list[int]] = {}
+    for _, row in df.iterrows():
+        doc = str(row[col_doc]).strip()
+        if not doc or doc.lower() in ("nan", ""):
+            continue
+        dias = []
+        for c in cols_dias:
+            v = row[c]
+            try:
+                d = int(float(str(v).replace(",", ".")))
+                if d > 0:
+                    dias.append(d)
+            except (ValueError, TypeError):
+                pass
+        if dias:
+            politica[doc] = dias
+
+    print(f"  Política carregada: {len(politica)} documento(s)")
+    for doc, dias in list(politica.items())[:5]:
+        print(f"    {doc} → {dias} dias")
+    return politica
+
+
 # ── Derivar base de rateio da própria demanda ──────────────────────────────────
 def derivar_rateio_da_demanda(demanda_detail: pd.DataFrame) -> pd.DataFrame:
     """
