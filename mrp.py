@@ -1196,22 +1196,52 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     materiais_validos = set(df["material"].unique())
     print(f"  Base pedidos_abertos : {len(df)} linha(s), {len(materiais_validos)} material(is)")
+    print(f"  Colunas disponíveis  : {list(df.columns)}")
 
-    # ── Data de remessa — lida diretamente do pedidos_abertos (ME2M já tem) ───
-    col_data_ped = next(
+    # ── Detectar colunas de data SEPARADAMENTE ────────────────────────────────
+    # Data de ENTREGA (para mes_remessa / MRP scheduling e base de pagamento)
+    col_entrega = next(
         (c for c in df.columns if c.lower() in (
             "data de remessa", "data remessa", "delivery date",
-            "data do documento", "data doc.",
+            "data prev. remessa", "data prevista remessa", "data de entrega",
         )), None
     )
-    if col_data_ped:
-        df["data_remessa"] = pd.to_datetime(df[col_data_ped], format="%d/%m/%Y", errors="coerce")
-        print(f"  Data remessa de      : '{col_data_ped}' (pedidos_abertos)")
+    # Data de CRIAÇÃO do PO (para mes_pedido / visão orçamentária)
+    col_criacao = next(
+        (c for c in df.columns if c.lower() in (
+            "data do documento", "data doc.", "doc. date",
+            "data criação", "data emissão", "document date",
+        )), None
+    )
+
+    if col_entrega:
+        df["data_remessa"] = pd.to_datetime(df[col_entrega], format="%d/%m/%Y", errors="coerce")
+        print(f"  Data entrega         : '{col_entrega}'")
+    elif col_criacao:
+        # Fallback: sem data de entrega, usa data do documento (menos preciso)
+        df["data_remessa"] = pd.to_datetime(df[col_criacao], format="%d/%m/%Y", errors="coerce")
+        print(f"  ⚠ 'Data de remessa' ausente — usando '{col_criacao}' como entrega")
     else:
         df["data_remessa"] = pd.NaT
         print("  ⚠ Nenhuma coluna de data encontrada em pedidos_abertos")
 
-    # ── Nº pedido e contrato — lidos diretamente do pedidos_abertos ───────────
+    if col_criacao:
+        df["mes_pedido"] = (
+            pd.to_datetime(df[col_criacao], format="%d/%m/%Y", errors="coerce")
+            .dt.to_period("M").astype(str)
+        )
+        print(f"  Data criação PO      : '{col_criacao}' → mes_pedido")
+    elif col_entrega:
+        # Fallback: sem data de criação, usa data de entrega para mes_pedido
+        df["mes_pedido"] = (
+            pd.to_datetime(df[col_entrega], format="%d/%m/%Y", errors="coerce")
+            .dt.to_period("M").astype(str)
+        )
+        print(f"  ⚠ 'Data do documento' ausente — usando entrega como mes_pedido")
+    else:
+        df["mes_pedido"] = None
+
+    # ── Nº pedido e contrato ──────────────────────────────────────────────────
     col_num_ped = next(
         (c for c in df.columns if c.lower() in (
             "documento de compras", "nº doc. compras", "purchase order",
@@ -1223,19 +1253,9 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
             "contrato básico", "contrato basico", "contract", "contrato",
         )), None
     )
-    col_doc_criacao = next(
-        (c for c in df.columns if c.lower() in (
-            "data do documento", "data doc.", "doc. date", "data criação",
-        ) and c != col_data_ped), None
-    )
 
     df["numero_pedido"] = df[col_num_ped].astype(str).str.strip() if col_num_ped else None
     df["contrato"]      = df[col_cont].astype(str).str.strip()    if col_cont  else None
-    df["mes_pedido"]    = (
-        pd.to_datetime(df[col_doc_criacao], format="%d/%m/%Y", errors="coerce")
-        .dt.to_period("M").astype(str)
-        if col_doc_criacao else None
-    )
 
     # ── Complemento via REMESSAS_SAP — só se faltarem data ou doc na base ─────
     # (NÃO deduplica — apenas enriquece colunas ausentes linha a linha)

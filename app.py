@@ -344,9 +344,19 @@ if btn_processar:
                     _abc_price = abc[["material","valor_unitario"]].drop_duplicates("material")
                     _tmp2 = _tmp2.merge(_abc_price, on="material", how="left")
                     _tmp2["valor_total_pedido"] = _tmp2["quantidade"] * _tmp2["valor_unitario"].fillna(0)
-                _tmp2["mes_pedido"]  = _tmp2["mes_pedido"].fillna("Já Comprometido") if "mes_pedido" in _tmp2.columns else "Já Comprometido"
+                # mes_pedido = mês de emissão do PO (Data do documento) → visão orçamentária
+                _tmp2["mes_pedido"] = (
+                    _tmp2["mes_pedido"].fillna("Sem Data de Emissão")
+                    if "mes_pedido" in _tmp2.columns else "Sem Data de Emissão"
+                )
                 _tmp2["mes_entrega"] = _tmp2["mes_remessa"]
-                _tmp2["data_base_pagamento"] = pd.to_datetime(_tmp2["mes_remessa"] + "-01", format="%Y-%m-%d", errors="coerce")
+                # data_base_pagamento = data de entrega real (data_remessa)
+                if "data_remessa" in _tmp2.columns:
+                    _tmp2["data_base_pagamento"] = pd.to_datetime(_tmp2["data_remessa"], errors="coerce")
+                else:
+                    _tmp2["data_base_pagamento"] = pd.to_datetime(
+                        _tmp2["mes_remessa"] + "-01", format="%Y-%m-%d", errors="coerce"
+                    )
                 if "contrato" in _tmp2.columns:
                     _tmp2["documento_referencia"] = _tmp2["contrato"].astype(str).str.strip()
                 elif "numero_pedido" in _tmp2.columns:
