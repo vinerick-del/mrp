@@ -198,6 +198,16 @@ def ler_remessas_sap(source) -> tuple:
     else:
         df["mes_pedido"] = None  # não disponível neste formato
 
+    # Nº pedido e contrato — necessários para vincular política de pagamento
+    df["numero_pedido"] = (
+        df["Documento de compras"].astype(str).str.strip()
+        if "Documento de compras" in df.columns else None
+    )
+    df["contrato"] = (
+        df["Contrato básico"].astype(str).str.strip()
+        if "Contrato básico" in df.columns else None
+    )
+
     # Preço líquido → valor unitário REAL por unidade
     # SAP armazena preço por "Unidade preço" (pode ser 1, 100, 1000…)
     # Fórmula correta: valor_unitario = Preço líquido / Unidade preço
@@ -962,6 +972,16 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
         df["mes_pedido"] = pd.to_datetime(df["data_pedido"], errors="coerce").dt.to_period("M").astype(str)
     else:
         df["mes_pedido"] = None
+
+    # Nº pedido e contrato — necessários para vincular política de pagamento
+    df["numero_pedido"] = (
+        df["Documento de compras"].astype(str).str.strip()
+        if "Documento de compras" in df.columns else None
+    )
+    df["contrato"] = (
+        df["Contrato básico"].astype(str).str.strip()
+        if "Contrato básico" in df.columns else None
+    )
 
     # Preço: tenta "Preço líquido" (SAP) com br_to_float e divisão por "Unidade preço"
     # Depois tenta coluna já normalizada "valor_unitario"; fallback = 0

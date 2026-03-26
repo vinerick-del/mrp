@@ -458,9 +458,13 @@ if "resultado" in st.session_state:
             tmp2["data_base_pagamento"]  = pd.to_datetime(
                 tmp2["mes_remessa"] + "-01", format="%Y-%m-%d", errors="coerce"
             )
-            tmp2["documento_referencia"] = (
-                tmp2["numero_pedido"].astype(str) if "numero_pedido" in tmp2.columns else None
-            )
+            # Prioridade: contrato (mais estável para política) > nº pedido
+            if "contrato" in tmp2.columns:
+                tmp2["documento_referencia"] = tmp2["contrato"].astype(str).str.strip()
+            elif "numero_pedido" in tmp2.columns:
+                tmp2["documento_referencia"] = tmp2["numero_pedido"].astype(str).str.strip()
+            else:
+                tmp2["documento_referencia"] = None
             tmp2["origem"]      = "Pedido Existente (SAP)"
             tmp2["valor_pedido"]= tmp2["valor_total_pedido"].fillna(0)
             linhas_sap = [tmp2[["origem", "material", "quantidade", "valor_pedido",
