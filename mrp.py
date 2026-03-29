@@ -223,13 +223,19 @@ def ler_remessas_sap(source) -> tuple:
     # Preço líquido → valor unitário REAL por unidade
     # SAP armazena preço por "Unidade preço" (pode ser 1, 100, 1000…)
     # Fórmula correta: valor_unitario = Preço líquido / Unidade preço
+    # ATENÇÃO: "Unidade preço" pode estar em formato BR ("1.000") — usar br_to_float
     if "Preço líquido" in df.columns:
         preco_raw    = df["Preço líquido"].apply(br_to_float)
-        unidade_preco = pd.to_numeric(
-            df.get("Unidade preço", pd.Series(1, index=df.index)),
-            errors="coerce",
-        ).fillna(1).replace(0, 1)
+        col_up = next((c for c in df.columns if c.lower() in (
+            "unidade preço", "unid. preço", "unidade de preço", "price unit", "por"
+        )), None)
+        if col_up:
+            unidade_preco = df[col_up].apply(br_to_float).replace(0, 1)
+        else:
+            unidade_preco = pd.Series(1.0, index=df.index)
         df["valor_unitario_pedido"] = preco_raw / unidade_preco
+        print(f"  Valor fonte          : 'Preço líquido' / '{col_up or 'N/A (=1)'}'"
+              f"  | unitário médio={df['valor_unitario_pedido'].mean():.4f}")
     elif "Valor líquido pedido" in df.columns:
         # Fallback: valor total do pedido — convertemos para unitário após
         # ter a quantidade; guardamos o total e dividimos mais abaixo
@@ -276,8 +282,10 @@ def ler_remessas_sap(source) -> tuple:
     df_fut = df[df["mes_remessa"] >= mes_atual].copy()
     df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
 
+    total_val = df_fut["valor_total_pedido"].sum()
     print(f"  Remessas após filtros : {len(df_fut)} linha(s)")
     print(f"  Materiais únicos      : {df_fut['material'].nunique()}")
+    print(f"  TOTAL valor futuro    : R$ {total_val:,.2f}")
 
     entradas = (
         df_fut.groupby(["material", "mes_remessa"], as_index=False)["quantidade"]
@@ -1192,22 +1200,31 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     if col_val_total:
         df["valor_total_pedido"]   = df[col_val_total].apply(br_to_float)
         df["valor_unitario_pedido"] = df["valor_total_pedido"] / df["quantidade"].replace(0, 1)
+        print(f"  Valor fonte          : '{col_val_total}' (valor restante direto)")
     # Prioridade 2: Preço líquido / Unidade preço
     elif "Preço líquido" in df.columns:
         preco_raw = df["Preço líquido"].apply(br_to_float)
-        unidade_preco = pd.to_numeric(
-            df.get("Unidade preço", pd.Series(1, index=df.index)),
-            errors="coerce",
-        ).fillna(1).replace(0, 1)
+        # IMPORTANTE: br_to_float para suportar "1.000" (formato BR) = 1000
+        col_up = next((c for c in df.columns if c.lower() in (
+            "unidade preço", "unid. preço", "unidade de preço", "price unit", "por"
+        )), None)
+        if col_up:
+            unidade_preco = df[col_up].apply(br_to_float).replace(0, 1)
+        else:
+            unidade_preco = pd.Series(1.0, index=df.index)
         df["valor_unitario_pedido"] = preco_raw / unidade_preco
         df["valor_total_pedido"]    = df["quantidade"] * df["valor_unitario_pedido"]
+        print(f"  Valor fonte          : 'Preço líquido' / '{col_up or 'N/A (=1)'}'"
+              f"  | unitário médio={df['valor_unitario_pedido'].mean():.4f}")
     # Prioridade 3: coluna já normalizada
     elif "valor_unitario" in df.columns:
         df["valor_unitario_pedido"] = df["valor_unitario"].apply(br_to_float)
         df["valor_total_pedido"]    = df["quantidade"] * df["valor_unitario_pedido"]
+        print(f"  Valor fonte          : 'valor_unitario' (coluna normalizada)")
     else:
         df["valor_unitario_pedido"] = 0.0
         df["valor_total_pedido"]    = 0.0
+        print(f"  ⚠ Valor fonte        : NENHUMA coluna de preço detectada → R$ 0")
 
     materiais_validos = set(df["material"].unique())
     print(f"  Base pedidos_abertos : {len(df)} linha(s), {len(materiais_validos)} material(is)")
@@ -1317,10 +1334,15 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     if "valor_total_pedido" not in df_fut.columns:
         df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
 
+    total_val = df_fut["valor_total_pedido"].sum() if "valor_total_pedido" in df_fut.columns else 0.0
     print(f"  Remessas futuras     : {len(df_fut)}")
     print(f"  Materiais únicos     : {df_fut['material'].nunique()}")
+    print(f"  TOTAL valor futuro   : R$ {total_val:,.2f}")
     if not df_fut.empty:
-        print(df_fut[["material", "quantidade", "mes_remessa"]].to_string(index=False))
+        cols_show = ["material", "quantidade", "mes_remessa"]
+        if "valor_total_pedido" in df_fut.columns:
+            cols_show.append("valor_total_pedido")
+        print(df_fut[cols_show].to_string(index=False))
 
     entradas = (
         df_fut.groupby(["material", "mes_remessa"], as_index=False)["quantidade"]

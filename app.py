@@ -327,6 +327,8 @@ if btn_processar:
 
             if not df_ped.empty:
                 _tmp = df_ped.copy()
+                print(f"  [FIN] Novos pedidos MRP      : R$ {_tmp['valor_total_pedido'].sum():,.2f}"
+                      f" ({len(_tmp)} pedidos)")
                 _tmp["mes_pedido"]           = pd.to_datetime(_tmp["data_pedido"], format="%d/%m/%Y", errors="coerce").dt.to_period("M").astype(str)
                 _tmp["mes_entrega"]          = _tmp["periodo_entrega"]
                 _tmp["data_base_pagamento"]  = pd.to_datetime(_tmp["data_chegada"], format="%d/%m/%Y", errors="coerce")
@@ -340,10 +342,14 @@ if btn_processar:
 
             if not df_abertos_fut.empty:
                 _tmp2 = df_abertos_fut.copy()
-                if "valor_total_pedido" not in _tmp2.columns or _tmp2["valor_total_pedido"].fillna(0).sum() == 0:
+                _val_sap = _tmp2["valor_total_pedido"].fillna(0).sum() if "valor_total_pedido" in _tmp2.columns else 0.0
+                print(f"  [FIN] Pedidos existentes SAP : R$ {_val_sap:,.2f}")
+                if "valor_total_pedido" not in _tmp2.columns or _val_sap == 0:
+                    print("  [FIN] ⚠ Usando fallback ABC para precificar pedidos existentes")
                     _abc_price = abc[["material","valor_unitario"]].drop_duplicates("material")
                     _tmp2 = _tmp2.merge(_abc_price, on="material", how="left")
                     _tmp2["valor_total_pedido"] = _tmp2["quantidade"] * _tmp2["valor_unitario"].fillna(0)
+                    print(f"  [FIN] Após fallback ABC       : R$ {_tmp2['valor_total_pedido'].sum():,.2f}")
                 # mes_pedido = mês de emissão do PO (Data do documento) → visão orçamentária
                 _tmp2["mes_pedido"] = (
                     _tmp2["mes_pedido"].fillna("Sem Data de Emissão")
