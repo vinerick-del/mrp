@@ -611,9 +611,22 @@ def ler_historico_mb51(source) -> pd.DataFrame:
         df["_qtd_raw"] = "0"
 
     # ── Filtrar apenas 101 e 102 ──────────────────────────────────────────────
-    df["tipo_mov"] = df["tipo_mov"].astype(str).str.strip()
+    # Normalização robusta: remove espaços, sufixo ".0" (quando pandas leu como float),
+    # e qualquer caractere não-numérico invisível
+    df["tipo_mov"] = (
+        df["tipo_mov"]
+        .astype(str)
+        .str.strip()
+        .str.replace(r"\.0+$", "", regex=True)   # "101.0" → "101"
+        .str.replace(r"\s+", "", regex=True)      # espaços internos
+    )
     todos_movs = df["tipo_mov"].value_counts().to_dict()
     print(f"  Tipos de movimento encontrados: {todos_movs}")
+    # Valores excluídos (para diagnóstico de diferenças)
+    excluidos = df[~df["tipo_mov"].isin(["101", "102"])]
+    if not excluidos.empty:
+        print(f"  ⚠ {len(excluidos)} linha(s) excluídas (tipo ≠ 101/102): "
+              f"{excluidos['tipo_mov'].value_counts().to_dict()}")
     df = df[df["tipo_mov"].isin(["101", "102"])].copy()
     if df.empty:
         print("  ⚠ MB51: nenhum movimento 101/102 encontrado.")
@@ -621,10 +634,10 @@ def ler_historico_mb51(source) -> pd.DataFrame:
 
     print(f"  Linhas 101: {(df['tipo_mov']=='101').sum()}  |  Linhas 102: {(df['tipo_mov']=='102').sum()}")
 
-    # ── Converter valores e quantidades ──────────────────────────────────────
+    # ── Converter valores e quantidades (arredondado a 2 casas) ──────────────
     print(f"  Amostra _valor_raw: {df['_valor_raw'].head(5).tolist()}")
-    df["valor"]     = df["_valor_raw"].apply(br_to_float)
-    df["quantidade"]= df["_qtd_raw"].apply(br_to_float)
+    df["valor"]      = df["_valor_raw"].apply(br_to_float).round(2)
+    df["quantidade"] = df["_qtd_raw"].apply(br_to_float).round(3)
 
     # ── Garantir sinais corretos por tipo de movimento ────────────────────────
     # 101 (recebimento) → sempre positivo
@@ -646,18 +659,20 @@ def ler_historico_mb51(source) -> pd.DataFrame:
     df["material"] = df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
 
     # ── Auditoria: totais por mês para conferência com relatório SAP ──────────
-    totais_mes = df.groupby("mes_entrega")["valor"].sum()
+    totais_mes = df.groupby("mes_entrega")["valor"].sum().round(2)
     print("  ┌─ Auditoria MB51 (101 − 102) ──────────────────────────")
     for mes, val in totais_mes.items():
         print(f"  │  {mes}: R$ {val:>18,.2f}")
     print(f"  │  TOTAL GERAL : R$ {df['valor'].sum():>15,.2f}")
     print("  └───────────────────────────────────────────────────────")
 
-    # ── Agrupar por material + mês ────────────────────────────────────────────
+    # ── Agrupar por material + mês (arredondado) ──────────────────────────────
     resultado = (
         df.groupby(["material", "mes_entrega"], as_index=False)
         .agg(quantidade=("quantidade", "sum"), valor_pedido=("valor", "sum"))
     )
+    resultado["quantidade"]   = resultado["quantidade"].round(3)
+    resultado["valor_pedido"] = resultado["valor_pedido"].round(2)
     print(f"  MB51 carregado: {len(resultado)} combinações material×mês "
           f"({df['material'].nunique()} materiais, {df['mes_entrega'].nunique()} meses)")
     return resultado
