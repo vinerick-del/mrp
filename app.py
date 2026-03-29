@@ -554,6 +554,11 @@ if _disparar:
                 "alertas_cont"  : alertas_cont,
                 "contratos"     : contratos,
                 "abc"           : abc,
+                # dados auxiliares para Projeção de Estoque
+                "estoque_inicial"  : estoque,
+                "lead_times_dict"  : lt_dict or {},
+                "materiais_df"     : materiais,
+                "demanda_df"       : demanda,
             }
             if _auto and not btn_processar:
                 st.info(
@@ -672,22 +677,180 @@ if "resultado" in st.session_state:
         return piv
 
     with tab_proj:
-        st.subheader("Projeção Mensal de Estoque por Material")
-        st.caption("Estoque projetado (un.) ao final de cada mês · última coluna = saldo final do horizonte")
+        st.subheader("Projeção de Estoque")
 
-        pivot = _build_projecao_pivot(df_mrp)
-        date_cols = [c for c in pivot.columns if c not in ("material", "classe", "Saldo Final")]
+        # ── Dados auxiliares ──────────────────────────────────────────────────
+        _est_ini_df  = r.get("estoque_inicial", pd.DataFrame())
+        _lt_dict     = r.get("lead_times_dict", {})
+        _mat_df      = r.get("materiais_df", pd.DataFrame())
+        _dem_df      = r.get("demanda_df", pd.DataFrame())
+        _abc         = r["abc"]
 
-        n_cells_piv = pivot.shape[0] * pivot.shape[1]
-        pd.set_option("styler.render.max_elements", max(n_cells_piv, 262144))
-        st.dataframe(
-            pivot.style.applymap(
-                lambda v: "background-color: #ffcccc" if isinstance(v, (int, float)) and v < 0 else "",
-                subset=date_cols + (["Saldo Final"] if date_cols else []),
-            ),
-            use_container_width=True,
-            height=450,
+        # Média de demanda mensal por material
+        _dem_avg = (
+            df_mrp.groupby("material")["demanda"].mean().rename("avg_dem").reset_index()
         )
+
+        # Base por material: classe + avg_dem + SS + MAX + lead + desc + est_ini
+        _meta = (
+            _abc[["material", "classe"]].drop_duplicates()
+            .merge(_dem_avg, on="material", how="left")
+        )
+        _meta["avg_dem"] = _meta["avg_dem"].fillna(0)
+        _meta["EST.SEG."] = (_meta["avg_dem"] * MESES_COBERTURA_SS).round(0).astype(int)
+        _meta["EST.MÁX."] = (_meta["avg_dem"] * (MESES_COBERTURA_SS + 1)).round(0).astype(int)
+        _meta["LEAD(D)"]  = _meta["material"].apply(
+            lambda m: _lt_dict.get(str(m), LEAD_TIME_DIAS)
+        )
+
+        if not _mat_df.empty and "descricao" in _mat_df.columns:
+            _meta = _meta.merge(_mat_df[["material", "descricao"]], on="material", how="left")
+        else:
+            _meta["descricao"] = ""
+        _meta["descricao"] = _meta["descricao"].fillna("")
+
+        if not _est_ini_df.empty and "estoque_total" in _est_ini_df.columns:
+            _meta = _meta.merge(
+                _est_ini_df[["material", "estoque_total"]].rename(
+                    columns={"estoque_total": "EST.INI"}
+                ),
+                on="material", how="left",
+            )
+            _meta["EST.INI"] = _meta["EST.INI"].fillna(0).round(0).astype(int)
+        else:
+            _meta["EST.INI"] = 0
+
+        # Pivot estoque projetado por mês
+        _proj = df_mrp.pivot_table(
+            index="material", columns="mes", values="estoque_proj", aggfunc="sum"
+        ).reset_index()
+
+        # Renomear meses → "MMM/YYYY" em PT-BR
+        _MESES_PT = {1:"JAN",2:"FEV",3:"MAR",4:"ABR",5:"MAI",6:"JUN",
+                     7:"JUL",8:"AGO",9:"SET",10:"OUT",11:"NOV",12:"DEZ"}
+        _mes_cols_orig = [c for c in _proj.columns if c != "material"]
+        _mes_rename = {}
+        for m in _mes_cols_orig:
+            try:
+                dt = pd.to_datetime(m + "-01")
+                _mes_rename[m] = f"{_MESES_PT[dt.month]}/{dt.year}"
+            except Exception:
+                _mes_rename[m] = m
+        _proj = _proj.rename(columns=_mes_rename)
+        _mes_labels = [_mes_rename[m] for m in _mes_cols_orig]
+
+        # Juntar tudo
+        _display = _meta.merge(_proj, on="material", how="left")
+
+        # ── Filtros ───────────────────────────────────────────────────────────
+        _cf1, _cf2, _cf3, _cf4 = st.columns([2, 2, 3, 1])
+        _classes_opts = ["Todas as Classes"] + sorted(_display["classe"].dropna().unique())
+        _sel_cls  = _cf1.selectbox("Classe", _classes_opts, label_visibility="collapsed")
+
+        _status_opts = ["Todos os Status", "Com ruptura", "Sem ruptura", "Abaixo do SS"]
+        _sel_status = _cf2.selectbox("Status", _status_opts, label_visibility="collapsed")
+
+        _search = _cf3.text_input("Código ou descrição...", "", label_visibility="collapsed",
+                                   placeholder="Código ou descrição...")
+
+        # Aplicar filtros
+        _df_f = _display.copy()
+        if _sel_cls != "Todas as Classes":
+            _df_f = _df_f[_df_f["classe"] == _sel_cls]
+        if _search:
+            _mask = (
+                _df_f["material"].astype(str).str.contains(_search, case=False, na=False) |
+                _df_f["descricao"].astype(str).str.contains(_search, case=False, na=False)
+            )
+            _df_f = _df_f[_mask]
+        if _sel_status == "Com ruptura":
+            _rupt_mask = (_df_f[_mes_labels].fillna(0) <= 0).any(axis=1)
+            _df_f = _df_f[_rupt_mask]
+        elif _sel_status == "Sem ruptura":
+            _ok_mask = (_df_f[_mes_labels].fillna(0) > 0).all(axis=1)
+            _df_f = _df_f[_ok_mask]
+        elif _sel_status == "Abaixo do SS":
+            _ss_mask = (
+                _df_f[_mes_labels].fillna(0)
+                .lt(_df_f["EST.SEG."].values.reshape(-1, 1))
+            ).any(axis=1)
+            _df_f = _df_f[_ss_mask]
+
+        _cf4.markdown(f"**{len(_df_f)}** materiais", unsafe_allow_html=True)
+
+        # Banner informativo
+        st.info(
+            "As rupturas (células vermelhas) são **esperadas** — representam o período "
+            "de trânsito do pedido (entre emissão e entrega). O Plano de Compras já contém "
+            "os pedidos planejados para resolver essas rupturas.",
+            icon="ℹ️",
+        )
+
+        # ── Tabela estilizada ─────────────────────────────────────────────────
+        _cols_fixas = ["classe", "material", "descricao", "EST.INI", "EST.SEG.", "EST.MÁX.", "LEAD(D)"]
+        _cols_view  = _cols_fixas + [m for m in _mes_labels if m in _df_f.columns]
+        _tbl = _df_f[_cols_view].copy().reset_index(drop=True)
+
+        # Truncar descrição longa
+        _tbl["descricao"] = _tbl["descricao"].str[:40]
+
+        # Renomear para exibição
+        _tbl = _tbl.rename(columns={
+            "classe"   : "CLS",
+            "material" : "CÓDIGO",
+            "descricao": "DESCRIÇÃO",
+        })
+        _mes_display = [m for m in _mes_labels if m in _cols_view]
+
+        def _style_proj(row):
+            styles = pd.Series("", index=row.index)
+            ss = row.get("EST.SEG.", 0) or 0
+
+            # Badge de classe
+            _cls_bg = {"A": "background-color:#c0392b;color:white;font-weight:bold;text-align:center",
+                       "B": "background-color:#e67e22;color:white;font-weight:bold;text-align:center",
+                       "C": "background-color:#2980b9;color:white;font-weight:bold;text-align:center"}
+            styles["CLS"] = _cls_bg.get(str(row.get("CLS", "")), "")
+
+            # Colunas de referência
+            styles["EST.SEG."] = "background-color:#b7e1b0;font-weight:bold"
+            styles["EST.MÁX."] = "background-color:#d9f2d0"
+
+            # Células mensais
+            for col in _mes_display:
+                if col not in row.index:
+                    continue
+                v = row[col]
+                if pd.isna(v):
+                    styles[col] = "color:#aaaaaa"
+                elif v <= 0:
+                    styles[col] = "background-color:#e74c3c;color:white;font-weight:bold"
+                elif v < ss:
+                    styles[col] = "background-color:#e67e22;color:white"
+                elif v < ss * 1.15:
+                    styles[col] = "background-color:#f9e04b"
+                else:
+                    styles[col] = "background-color:#b7e1b0"
+            return styles
+
+        _n_cells = _tbl.shape[0] * _tbl.shape[1]
+        pd.set_option("styler.render.max_elements", max(_n_cells, 262144))
+
+        _styled = (
+            _tbl.style
+            .apply(_style_proj, axis=1)
+            .format(
+                {c: lambda v: "—" if pd.isna(v) else f"{int(round(v)):,}".replace(",", ".")
+                 for c in _mes_display},
+                na_rep="—",
+            )
+            .format({"EST.INI": lambda v: f"{int(v):,}".replace(",","."),
+                     "EST.SEG.": lambda v: f"{int(v):,}".replace(",","."),
+                     "EST.MÁX.": lambda v: f"{int(v):,}".replace(",",".")},
+                    na_rep="0")
+        )
+
+        st.dataframe(_styled, use_container_width=True, height=500)
 
     with tab_ped:
         st.subheader("Pedidos a Gerar")
