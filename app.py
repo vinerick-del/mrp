@@ -2,12 +2,15 @@
 app.py — Interface Streamlit para o Sistema MRP SAP
 ====================================================
 Upload dos 4 arquivos SAP + Lead Times → Processar → Dashboard + Download Excel
+
+Persistência: arquivos importados são salvos em DIR_DADOS e recarregados
+automaticamente na próxima abertura do app.
 """
 
 import io
 import os
 import tempfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -59,14 +62,58 @@ st.caption(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HELPER: salvar uploaded file em temp e retornar path
+# HELPERS DE PERSISTÊNCIA
 # ─────────────────────────────────────────────────────────────────────────────
-def _tmp_path(uploaded, suffix=".csv") -> str:
-    """Salva UploadedFile em arquivo temporário e retorna o caminho."""
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(uploaded.read())
-    tmp.flush()
-    return tmp.name
+_ARQUIVOS_MAPA = {
+    "demanda"   : ARQUIVO_DEMANDA_RAW,
+    "remessas"  : "remessas_sap.csv",
+    "pedidos"   : "pedidos_abertos.csv",
+    "estoque"   : "estoque_sap.csv",
+    "contratos" : "contratos_sap.csv",
+    "materiais" : "materiais.csv",
+    "lead"      : "lead_times.csv",
+    "mb51"      : "historico_mb51.csv",
+    "politica"  : "politica_pagamento.csv",
+}
+
+
+def _path_arquivo(chave: str) -> str:
+    return os.path.join(DIR_DADOS, _ARQUIVOS_MAPA[chave])
+
+
+def _info_arquivo(chave: str) -> str | None:
+    """Retorna string com data de modificação ou None se não existir."""
+    p = _path_arquivo(chave)
+    if not os.path.exists(p):
+        return None
+    mtime = datetime.fromtimestamp(os.path.getmtime(p))
+    return mtime.strftime("%d/%m/%Y %H:%M")
+
+
+def _salvar_upload(uploaded, chave: str) -> bool:
+    """Salva UploadedFile em DIR_DADOS. Retorna True se ok (ou se nada enviado)."""
+    if not uploaded:
+        return True
+    path = _path_arquivo(chave)
+    os.makedirs(DIR_DADOS, exist_ok=True)
+    try:
+        uploaded.seek(0)
+        with open(path, "wb") as fh:
+            fh.write(uploaded.read())
+        return True
+    except PermissionError:
+        st.error(
+            f"Sem permissão para salvar **{_ARQUIVOS_MAPA[chave]}**. "
+            "Feche o arquivo no Excel e tente novamente."
+        )
+        return False
+
+
+def _tem_dados_minimos() -> bool:
+    """True se os arquivos obrigatórios (demanda + pelo menos 1 de pedidos) existem."""
+    return os.path.exists(_path_arquivo("demanda")) and (
+        os.path.exists(_path_arquivo("pedidos")) or os.path.exists(_path_arquivo("remessas"))
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,81 +236,115 @@ def _calcular_alertas(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR — UPLOADS
+# SIDEBAR — UPLOADS E STATUS DE PERSISTÊNCIA
 # ─────────────────────────────────────────────────────────────────────────────
+def _label_upload(numero: str, descricao: str, chave: str) -> str:
+    info = _info_arquivo(chave)
+    if info:
+        return f"{numero} {descricao} ✅"
+    return f"{numero} {descricao}"
+
+
+def _caption_arquivo(chave: str):
+    info = _info_arquivo(chave)
+    if info:
+        st.caption(f"Último import: {info}")
+
+
 with st.sidebar:
     st.header("📂 Arquivos de Entrada")
+    st.caption("Arquivos importados são **salvos automaticamente**. "
+               "Na próxima abertura o app carrega os dados da última importação.")
 
-    f_demanda   = st.file_uploader("① Demanda (DTM format)", type=["csv", "txt"],
-                                   help="Arquivo demanda_dtm_raw.csv — separado por ';'")
-    f_remessas  = st.file_uploader("② Remessas SAP (entregas futuras)", type=["csv", "txt"],
-                                   help="Exportação ME2M / ME9F — separado por TAB (usado como lookup de datas e nºs de documento)")
-    f_pedidos   = st.file_uploader("③ Pedidos em Aberto (base limpa)", type=["csv", "txt"],
-                                   help="pedidos_abertos.csv — base principal de materiais e quantidades válidas para o estoque")
-    f_estoque   = st.file_uploader("④ Estoque SAP (multi-depósito)", type=["csv", "txt"],
-                                   help="Exportação MB52 / MMBE — separado por TAB")
-    f_contratos = st.file_uploader("⑤ Contratos SAP (framework)", type=["csv", "txt"],
-                                   help="Exportação ME3M / ME3N — separado por TAB")
-    f_materiais = st.file_uploader("⑥ Materiais (catálogo SAP)", type=["csv", "txt"],
-                                   help="Exportação MM60 / MM03 — CÓDIGO | DESCRIÇÃO | VALOR UNITÁRIO")
-    f_lead      = st.file_uploader("⑦ Lead Times (opcional)", type=["csv"],
-                                   help="CSV simples: material,lead_time_dias")
-    f_mb51      = st.file_uploader("⑧ Histórico MB51 (Entradas 101/102)", type=["csv", "txt"],
-                                   help="Relatório MB51 — movimentos 101 (recebimento) e 102 (estorno)")
-    f_politica  = st.file_uploader("⑨ Política de Pagamento", type=["csv", "txt"],
-                                   help="CSV: documento (contrato ou nº pedido) | dias_parcela_1 | dias_parcela_2 ...")
+    f_demanda   = st.file_uploader(_label_upload("①","Demanda (DTM)","demanda"),
+                                   type=["csv","txt"], key="up_demanda",
+                                   help="demanda_dtm_raw.csv — separado por ';'")
+    _caption_arquivo("demanda")
+
+    f_remessas  = st.file_uploader(_label_upload("②","Remessas SAP","remessas"),
+                                   type=["csv","txt"], key="up_remessas",
+                                   help="ME2M/ME9F — lookup de datas e nºs de documento")
+    _caption_arquivo("remessas")
+
+    f_pedidos   = st.file_uploader(_label_upload("③","Pedidos em Aberto","pedidos"),
+                                   type=["csv","txt"], key="up_pedidos",
+                                   help="pedidos_abertos.csv — base principal de qtd/valores")
+    _caption_arquivo("pedidos")
+
+    f_estoque   = st.file_uploader(_label_upload("④","Estoque SAP","estoque"),
+                                   type=["csv","txt"], key="up_estoque",
+                                   help="MB52/MMBE — separado por TAB")
+    _caption_arquivo("estoque")
+
+    f_contratos = st.file_uploader(_label_upload("⑤","Contratos SAP","contratos"),
+                                   type=["csv","txt"], key="up_contratos",
+                                   help="ME3M/ME3N — separado por TAB")
+    _caption_arquivo("contratos")
+
+    f_materiais = st.file_uploader(_label_upload("⑥","Materiais (catálogo)","materiais"),
+                                   type=["csv","txt"], key="up_materiais",
+                                   help="MM60/MM03 — CÓDIGO | DESCRIÇÃO | VALOR UNITÁRIO")
+    _caption_arquivo("materiais")
+
+    f_lead      = st.file_uploader(_label_upload("⑦","Lead Times","lead"),
+                                   type=["csv"], key="up_lead",
+                                   help="CSV: material,lead_time_dias")
+    _caption_arquivo("lead")
+
+    f_mb51      = st.file_uploader(_label_upload("⑧","Histórico MB51","mb51"),
+                                   type=["csv","txt"], key="up_mb51",
+                                   help="MB51 — movimentos 101/102")
+    _caption_arquivo("mb51")
+
+    f_politica  = st.file_uploader(_label_upload("⑨","Política de Pagamento","politica"),
+                                   type=["csv","txt"], key="up_politica",
+                                   help="CSV: documento | dias_parcela_1 | dias_parcela_2 ...")
+    _caption_arquivo("politica")
 
     st.divider()
-    usar_dados_demo = st.checkbox("Usar dados existentes em data/", value=True,
-                                  help="Processa os arquivos já presentes na pasta data/ do servidor")
     btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
+    if _tem_dados_minimos():
+        st.caption("Dados disponíveis — processamento automático ativo.")
 
     st.divider()
-    st.caption(
-        "**Fluxo:** Arquivos SAP → Normalização → "
-        "Motor MRP existente → Dashboard + Excel"
-    )
+    st.caption("**Fluxo:** Arquivos SAP → Normalização → Motor MRP → Dashboard + Excel")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PROCESSAMENTO
+# SALVAR NOVOS UPLOADS IMEDIATAMENTE (antes do processamento)
 # ─────────────────────────────────────────────────────────────────────────────
-if btn_processar:
+_uploads = {
+    "demanda"  : f_demanda,
+    "remessas" : f_remessas,
+    "pedidos"  : f_pedidos,
+    "estoque"  : f_estoque,
+    "contratos": f_contratos,
+    "materiais": f_materiais,
+    "lead"     : f_lead,
+    "mb51"     : f_mb51,
+    "politica" : f_politica,
+}
+_novos_uploads = [k for k, v in _uploads.items() if v is not None]
+if _novos_uploads:
+    for chave, uploaded in _uploads.items():
+        if uploaded:
+            _salvar_upload(uploaded, chave)
+    # Forçar reprocessamento quando novos arquivos chegarem
+    st.session_state.pop("resultado", None)
+    st.session_state.pop("_auto_processado", None)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROCESSAMENTO — disparado pelo botão OU automaticamente na primeira sessão
+# ─────────────────────────────────────────────────────────────────────────────
+_auto = _tem_dados_minimos() and "resultado" not in st.session_state and not st.session_state.get("_auto_processado")
+_disparar = btn_processar or _auto
+
+if _disparar:
+    st.session_state["_auto_processado"] = True
     with st.spinner("Processando MRP..."):
         try:
             os.makedirs(DIR_DADOS, exist_ok=True)
             os.makedirs(DIR_SAIDA, exist_ok=True)
-
-            # ── Salvar arquivos enviados pelo usuário (se houver) ─────────────
-            def _salvar_upload(uploaded, nome_arquivo):
-                """Salva o arquivo enviado em DIR_DADOS. Retorna True em sucesso."""
-                if not uploaded:
-                    return True
-                path = os.path.join(DIR_DADOS, nome_arquivo)
-                try:
-                    with open(path, "wb") as fh:
-                        fh.write(uploaded.read())
-                    return True
-                except PermissionError:
-                    st.error(
-                        f"Sem permissão para salvar **{nome_arquivo}**. "
-                        "Feche o arquivo no Excel (ou outro programa) e tente novamente."
-                    )
-                    return False
-
-            ok = all([
-                _salvar_upload(f_demanda,   ARQUIVO_DEMANDA_RAW),
-                _salvar_upload(f_remessas,  "remessas_sap.csv"),
-                _salvar_upload(f_pedidos,   "pedidos_abertos.csv"),
-                _salvar_upload(f_estoque,   "estoque_sap.csv"),
-                _salvar_upload(f_contratos, "contratos_sap.csv"),
-                _salvar_upload(f_materiais, "materiais.csv"),
-                _salvar_upload(f_lead,      "lead_times.csv"),
-                _salvar_upload(f_mb51,      "historico_mb51.csv"),
-                _salvar_upload(f_politica,  "politica_pagamento.csv"),
-            ])
-            if not ok:
-                st.stop()
 
             # ── Carregar materiais (legado — necessário para ABC fallback) ────
             mat_path = os.path.join(DIR_DADOS, "materiais.csv")
@@ -474,11 +555,19 @@ if btn_processar:
                 "contratos"     : contratos,
                 "abc"           : abc,
             }
-            st.success(
-                f"✅ MRP processado — {df_mrp['material'].nunique()} material(is) · "
-                f"{df_mrp['periodo'].nunique()} meses · "
-                f"{len(df_ped)} pedido(s) gerado(s)"
-            )
+            if _auto and not btn_processar:
+                st.info(
+                    f"📂 Dados carregados automaticamente — "
+                    f"{df_mrp['material'].nunique()} material(is) · "
+                    f"{df_mrp['periodo'].nunique()} meses · "
+                    f"{len(df_ped)} pedido(s)"
+                )
+            else:
+                st.success(
+                    f"✅ MRP processado — {df_mrp['material'].nunique()} material(is) · "
+                    f"{df_mrp['periodo'].nunique()} meses · "
+                    f"{len(df_ped)} pedido(s) gerado(s)"
+                )
 
         except Exception as exc:
             st.error(f"❌ Erro no processamento: {exc}")
