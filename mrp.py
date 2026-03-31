@@ -1289,6 +1289,13 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     df["numero_pedido"] = df[col_num_ped].astype(str).str.strip() if col_num_ped else None
     df["contrato"]      = df[col_cont].astype(str).str.strip()    if col_cont  else None
 
+    # Fornecedor (opcional — nem todo export ME2M inclui)
+    col_forn = next((c for c in df.columns if c.lower() in (
+        "nome do fornecedor", "nome forn.", "fornecedor",
+        "vendor", "vendor name", "forn.",
+    )), None)
+    df["fornecedor"] = df[col_forn].astype(str).str.strip() if col_forn else "—"
+
     # ── Complemento via REMESSAS_SAP — só se faltarem data ou doc na base ─────
     # (NÃO deduplica — apenas enriquece colunas ausentes linha a linha)
     precisa_data = df["data_remessa"].isna().all()

@@ -388,6 +388,8 @@ if _disparar:
                 else None
             )
             df_rateio = passo_12_rateio(df_ped, df_abertos_fut, demanda_detail=demanda_detail)
+            # demanda_detail salvo para filtros de departamento/programa na Projeção de Estoque
+            _demanda_detail_df = demanda_detail if demanda_detail is not None else pd.DataFrame()
 
             # ── Histórico MB51 (opcional) ─────────────────────────────────────
             mb51_path = os.path.join(DIR_DADOS, "historico_mb51.csv")
@@ -559,6 +561,8 @@ if _disparar:
                 "lead_times_dict"  : lt_dict or {},
                 "materiais_df"     : materiais,
                 "demanda_df"       : demanda,
+                "mrp_full"         : df_mrp,         # com estoque_seguranca_3m, entrada_pedidos_existentes
+                "demanda_detail_df": _demanda_detail_df,  # com departamento e programa_orcamentario
             }
             if _auto and not btn_processar:
                 st.info(
@@ -618,7 +622,7 @@ if "resultado" in st.session_state:
     # ── Abas do dashboard ─────────────────────────────────────────────────────
     tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat = st.tabs([
         "📊 MRP Projetado",
-        "📅 Projeção Mensal",
+        "📅 Projeção de Estoque",
         "🛒 Pedidos a Gerar",
         "💰 Visão Financeira",
         "🔴 Alertas de Ruptura",
@@ -677,31 +681,44 @@ if "resultado" in st.session_state:
         return piv
 
     with tab_proj:
-        st.subheader("Projeção de Estoque")
+        import collections as _col_mod
+        import streamlit.components.v1 as _stc
 
         # ── Dados auxiliares ──────────────────────────────────────────────────
-        _est_ini_df  = r.get("estoque_inicial", pd.DataFrame())
-        _lt_dict     = r.get("lead_times_dict", {})
-        _mat_df      = r.get("materiais_df", pd.DataFrame())
-        _dem_df      = r.get("demanda_df", pd.DataFrame())
-        _abc         = r["abc"]
+        _est_ini_df   = r.get("estoque_inicial", pd.DataFrame())
+        _lt_dict      = r.get("lead_times_dict", {})
+        _mat_df       = r.get("materiais_df", pd.DataFrame())
+        _abc          = r["abc"]
+        _mrp_full     = r.get("mrp_full", pd.DataFrame())   # com estoque_seguranca_3m
+        _dem_det      = r.get("demanda_detail_df", pd.DataFrame())  # material|mes|depto|prog
+        _abertos      = r.get("abertos_fut", pd.DataFrame())
+        _novos_ped    = r["pedidos"]
 
-        # Média de demanda mensal por material
-        _dem_avg = (
-            df_mrp.groupby("material")["demanda"].mean().rename("avg_dem").reset_index()
-        )
+        _MESES_PT = {1:"JAN",2:"FEV",3:"MAR",4:"ABR",5:"MAI",6:"JUN",
+                     7:"JUL",8:"AGO",9:"SET",10:"OUT",11:"NOV",12:"DEZ"}
 
-        # Base por material: classe + avg_dem + SS + MAX + lead + desc + est_ini
-        _meta = (
-            _abc[["material", "classe"]].drop_duplicates()
-            .merge(_dem_avg, on="material", how="left")
-        )
-        _meta["avg_dem"] = _meta["avg_dem"].fillna(0)
-        _meta["EST.SEG."] = (_meta["avg_dem"] * MESES_COBERTURA_SS).round(0).astype(int)
-        _meta["EST.MÁX."] = (_meta["avg_dem"] * (MESES_COBERTURA_SS + 1)).round(0).astype(int)
-        _meta["LEAD(D)"]  = _meta["material"].apply(
-            lambda m: _lt_dict.get(str(m), LEAD_TIME_DIAS)
-        )
+        def _mes_label(m: str) -> str:
+            try:
+                dt = pd.to_datetime(m + "-01")
+                return f"{_MESES_PT[dt.month]}/{dt.year}"
+            except Exception:
+                return m
+
+        # ── Estoque de segurança por material: usa mrp_full se disponível ────
+        if not _mrp_full.empty and "estoque_seguranca_3m" in _mrp_full.columns:
+            _ss_map = (
+                _mrp_full.groupby("material")["estoque_seguranca_3m"].mean()
+                .round(0).astype(int).to_dict()
+            )
+        else:
+            _dem_avg_map = df_mrp.groupby("material")["demanda"].mean().to_dict()
+            _ss_map = {m: int(round(v * MESES_COBERTURA_SS)) for m, v in _dem_avg_map.items()}
+
+        # ── Metadados por material ────────────────────────────────────────────
+        _meta = _abc[["material", "classe"]].drop_duplicates().copy()
+        _meta["EST.SEG."] = _meta["material"].map(_ss_map).fillna(0).astype(int)
+        _meta["EST.MÁX."] = (_meta["EST.SEG."] * ((MESES_COBERTURA_SS + 1) / MESES_COBERTURA_SS)).round(0).astype(int)
+        _meta["LEAD(D)"]  = _meta["material"].apply(lambda m: _lt_dict.get(str(m), LEAD_TIME_DIAS))
 
         if not _mat_df.empty and "descricao" in _mat_df.columns:
             _meta = _meta.merge(_mat_df[["material", "descricao"]], on="material", how="left")
@@ -711,146 +728,303 @@ if "resultado" in st.session_state:
 
         if not _est_ini_df.empty and "estoque_total" in _est_ini_df.columns:
             _meta = _meta.merge(
-                _est_ini_df[["material", "estoque_total"]].rename(
-                    columns={"estoque_total": "EST.INI"}
-                ),
+                _est_ini_df[["material", "estoque_total"]].rename(columns={"estoque_total": "EST.INI"}),
                 on="material", how="left",
             )
             _meta["EST.INI"] = _meta["EST.INI"].fillna(0).round(0).astype(int)
         else:
             _meta["EST.INI"] = 0
 
-        # Pivot estoque projetado por mês
-        _proj = df_mrp.pivot_table(
+        # ── Pivot "com pedidos" ───────────────────────────────────────────────
+        _mes_cols_orig = sorted(df_mrp["mes"].unique())
+        _proj_com = df_mrp.pivot_table(
             index="material", columns="mes", values="estoque_proj", aggfunc="sum"
         ).reset_index()
 
-        # Renomear meses → "MMM/YYYY" em PT-BR
-        _MESES_PT = {1:"JAN",2:"FEV",3:"MAR",4:"ABR",5:"MAI",6:"JUN",
-                     7:"JUL",8:"AGO",9:"SET",10:"OUT",11:"NOV",12:"DEZ"}
-        _mes_cols_orig = [c for c in _proj.columns if c != "material"]
-        _mes_rename = {}
-        for m in _mes_cols_orig:
-            try:
-                dt = pd.to_datetime(m + "-01")
-                _mes_rename[m] = f"{_MESES_PT[dt.month]}/{dt.year}"
-            except Exception:
-                _mes_rename[m] = m
-        _proj = _proj.rename(columns=_mes_rename)
-        _mes_labels = [_mes_rename[m] for m in _mes_cols_orig]
+        # ── Pivot "sem pedidos" ───────────────────────────────────────────────
+        if not _mrp_full.empty and "total_entradas" in _mrp_full.columns:
+            _sp = _mrp_full.sort_values(["material", "periodo"]).copy()
+            _sp["cum_ent"] = _sp.groupby("material")["total_entradas"].cumsum()
+            _sp["est_sem"] = _sp["estoque_projetado"] - _sp["cum_ent"]
+            _proj_sem = _sp.pivot_table(
+                index="material", columns="periodo", values="est_sem", aggfunc="sum"
+            ).reset_index().rename(columns={"material": "material"})
+            _mes_cols_sem = sorted([c for c in _proj_sem.columns if c != "material"])
+        else:
+            _proj_sem = _proj_com.copy()
+            _mes_cols_sem = _mes_cols_orig
 
-        # Juntar tudo
-        _display = _meta.merge(_proj, on="material", how="left")
+        # Labels PT-BR para meses
+        _mes_labels_com = [_mes_label(m) for m in _mes_cols_orig]
+        _proj_com = _proj_com.rename(columns={o: _mes_label(o) for o in _mes_cols_orig})
+        _mes_labels_sem = [_mes_label(m) for m in _mes_cols_sem]
+        _proj_sem = _proj_sem.rename(columns={o: _mes_label(o) for o in _mes_cols_sem})
+
+        # Meses com pedidos (entrada > 0)
+        _ent_por_mat_mes: dict[str, set[str]] = _col_mod.defaultdict(set)
+        if not _mrp_full.empty and "total_entradas" in _mrp_full.columns:
+            for _, _er in _mrp_full[_mrp_full["total_entradas"] > 0].iterrows():
+                _ent_por_mat_mes[str(_er["material"])].add(_mes_label(str(_er["periodo"])))
+
+        # ── Tooltip: resumo de pedidos por material ───────────────────────────
+        def _build_tooltip(mat: str) -> str:
+            linhas = []
+            if not _abertos.empty:
+                sub = _abertos[_abertos["material"].astype(str) == str(mat)]
+                for _, ro in sub.iterrows():
+                    forn  = str(ro.get("fornecedor", "—"))
+                    qtd   = ro.get("quantidade", 0)
+                    mes_e = str(ro.get("mes_remessa", "—"))
+                    ped   = str(ro.get("numero_pedido", "—"))
+                    linhas.append(f"<tr><td>📦 Em aberto</td><td>{ped}</td>"
+                                  f"<td>{forn[:22]}</td>"
+                                  f"<td style='text-align:right'>{int(qtd):,}</td>"
+                                  f"<td>{mes_e}</td></tr>")
+            if not _novos_ped.empty:
+                sub = _novos_ped[_novos_ped["material"].astype(str) == str(mat)]
+                for _, ro in sub.iterrows():
+                    qtd   = ro.get("quantidade", 0)
+                    ent   = str(ro.get("periodo_entrega", "—"))
+                    linhas.append(f"<tr><td style='color:#a8e6cf'>🔧 Sugerido MRP</td>"
+                                  f"<td>—</td><td>—</td>"
+                                  f"<td style='text-align:right'>{int(qtd):,}</td>"
+                                  f"<td>{ent}</td></tr>")
+            if not linhas:
+                return ("<div style='color:#aaa;font-style:italic;padding:4px'>"
+                        "Nenhum pedido em andamento</div>")
+            rows = "".join(linhas[:10])
+            extra = f"<tr><td colspan='5' style='color:#888;font-size:10px'>+{len(linhas)-10} mais…</td></tr>" if len(linhas) > 10 else ""
+            return (f"<table style='width:100%;border-collapse:collapse;font-size:11px'>"
+                    f"<tr style='color:#aaa;font-size:10px'>"
+                    f"<th>Tipo</th><th>Pedido</th><th>Fornecedor</th>"
+                    f"<th>Qtd</th><th>Entrega</th></tr>"
+                    f"{rows}{extra}</table>")
+
+        _tooltip_map = {str(m): _build_tooltip(str(m))
+                        for m in _meta["material"].unique()}
 
         # ── Filtros ───────────────────────────────────────────────────────────
-        _cf1, _cf2, _cf3, _cf4 = st.columns([2, 2, 3, 1])
-        _classes_opts = ["Todas as Classes"] + sorted(_display["classe"].dropna().unique())
-        _sel_cls  = _cf1.selectbox("Classe", _classes_opts, label_visibility="collapsed")
+        st.markdown("### Filtros")
+        _fr1, _fr2, _fr3 = st.columns([3, 3, 3])
+        _fr4, _fr5, _fr6 = st.columns([3, 3, 3])
 
-        _status_opts = ["Todos os Status", "Com ruptura", "Sem ruptura", "Abaixo do SS"]
-        _sel_status = _cf2.selectbox("Status", _status_opts, label_visibility="collapsed")
+        _search_cod  = _fr1.text_input("Código do material", "", placeholder="Ex: 400040")
+        _search_desc = _fr2.text_input("Descrição", "", placeholder="Buscar por nome...")
+        _all_mes_opts = _mes_labels_com
+        _sel_meses = _fr3.multiselect("Meses", _all_mes_opts, default=_all_mes_opts,
+                                       placeholder="Selecione meses...")
 
-        _search = _cf3.text_input("Código ou descrição...", "", label_visibility="collapsed",
-                                   placeholder="Código ou descrição...")
+        _deptos, _progs = [], []
+        if not _dem_det.empty:
+            if "departamento" in _dem_det.columns:
+                _deptos = sorted(_dem_det["departamento"].dropna().unique())
+            if "programa_orcamentario" in _dem_det.columns:
+                _progs  = sorted(_dem_det["programa_orcamentario"].dropna().unique())
 
-        # Aplicar filtros
-        _df_f = _display.copy()
-        if _sel_cls != "Todas as Classes":
-            _df_f = _df_f[_df_f["classe"] == _sel_cls]
-        if _search:
-            _mask = (
-                _df_f["material"].astype(str).str.contains(_search, case=False, na=False) |
-                _df_f["descricao"].astype(str).str.contains(_search, case=False, na=False)
+        _sel_depto = _fr4.multiselect("Departamento", _deptos,
+                                       placeholder="Todos os departamentos")
+        _sel_prog  = _fr5.multiselect("Programa Orçamentário", _progs,
+                                       placeholder="Todos os programas")
+        _sel_status = _fr6.selectbox(
+            "Status de estoque",
+            ["Todos", "Com ruptura", "Sem ruptura", "Abaixo do SS", "Com pedido", "Sem pedido"],
+        )
+
+        # Filtrar materiais por depto/prog via demanda_detail
+        _mats_permitidos = set(_meta["material"].astype(str))
+        if (_sel_depto or _sel_prog) and not _dem_det.empty:
+            _dd = _dem_det.copy()
+            if _sel_depto:
+                _dd = _dd[_dd["departamento"].isin(_sel_depto)]
+            if _sel_prog:
+                _dd = _dd[_dd["programa_orcamentario"].isin(_sel_prog)]
+            _mats_permitidos = set(_dd["material"].astype(str))
+
+        # ── Tabela completa com metadados ─────────────────────────────────────
+        _disp_com = _meta.merge(_proj_com, on="material", how="left").copy()
+        _disp_sem = _meta.merge(_proj_sem, on="material", how="left").copy()
+
+        def _aplicar_filtros(df_in, mes_labels):
+            d = df_in.copy()
+            d = d[d["material"].astype(str).isin(_mats_permitidos)]
+            if _search_cod:
+                d = d[d["material"].astype(str).str.contains(_search_cod, case=False, na=False)]
+            if _search_desc:
+                d = d[d["descricao"].astype(str).str.contains(_search_desc, case=False, na=False)]
+            _mcols = [m for m in mes_labels if m in d.columns]
+            if _sel_status == "Com ruptura":
+                d = d[(d[_mcols].fillna(0) <= 0).any(axis=1)]
+            elif _sel_status == "Sem ruptura":
+                d = d[(d[_mcols].fillna(0) > 0).all(axis=1)]
+            elif _sel_status == "Abaixo do SS":
+                d = d[(d[_mcols].fillna(0).lt(d["EST.SEG."].values.reshape(-1, 1))).any(axis=1)]
+            elif _sel_status == "Com pedido":
+                _tem_ped = {m for m, s in _ent_por_mat_mes.items() if s}
+                d = d[d["material"].astype(str).isin(_tem_ped)]
+            elif _sel_status == "Sem pedido":
+                _tem_ped = {m for m, s in _ent_por_mat_mes.items() if s}
+                d = d[~d["material"].astype(str).isin(_tem_ped)]
+            return d, _mcols
+
+        _df_com, _mcols_com = _aplicar_filtros(_disp_com, _mes_labels_com)
+        _df_sem, _mcols_sem = _aplicar_filtros(_disp_sem, _mes_labels_sem)
+
+        # Meses selecionados como filtro adicional
+        if _sel_meses:
+            _mcols_com = [m for m in _mcols_com if m in _sel_meses]
+            _mcols_sem = [m for m in _mcols_sem if m in _sel_meses]
+
+        # ── KPIs ─────────────────────────────────────────────────────────────
+        st.markdown("---")
+        _k1,_k2,_k3,_k4,_k5,_k6,_k7 = st.columns(7)
+
+        def _kpi_levels(df_k, mcols):
+            if df_k.empty or not mcols:
+                return 0, 0, 0, 0, 0, 0, 0
+            _vals = df_k[mcols].fillna(0)
+            _ss_v = df_k["EST.SEG."].values.reshape(-1, 1)
+            n_tot  = len(df_k)
+            _m_rupt = (_vals <= 0).any(axis=1)                       # tem ruptura
+            _m_abx  = (~_m_rupt) & (_vals < _ss_v).any(axis=1)      # abaixo SS, sem ruptura
+            _m_ok   = ~_m_rupt & ~_m_abx                             # tudo dentro do SS
+            n_rupt  = int(_m_rupt.sum())
+            n_abx   = int(_m_abx.sum())
+            n_ok    = int(_m_ok.sum())
+            _tem_ped = {m for m, s in _ent_por_mat_mes.items() if s}
+            n_cpd   = int(df_k["material"].astype(str).isin(_tem_ped).sum())
+            n_spd   = n_tot - n_cpd
+            n_scob  = n_rupt   # sem cobertura = tem ruptura no período
+            return n_tot, n_ok, n_abx, n_rupt, n_cpd, n_spd, n_scob
+
+        _n_tot,_n_ok,_n_abx,_n_rupt,_n_cpd,_n_spd,_n_scob = _kpi_levels(_df_com, _mcols_com)
+        _k1.metric("📦 Itens", _n_tot)
+        _k2.metric("🟢 Adequado", _n_ok)
+        _k3.metric("🟡 Alerta", _n_abx)
+        _k4.metric("🔴 Ruptura", _n_rupt)
+        _k5.metric("✅ Com pedido", _n_cpd)
+        _k6.metric("⬜ Sem pedido", _n_spd)
+        _k7.metric("⚠ Sem cobertura", _n_scob)
+        st.markdown("---")
+
+        # ── Função geradora de HTML da tabela com tooltip ─────────────────────
+        def _render_proj_html(df_t, mcols, titulo):
+            if df_t.empty:
+                return f"<p style='color:#888'>{titulo}: nenhum dado.</p>"
+
+            CSS = """
+<style>
+.pt-wrap{overflow-x:auto;overflow-y:auto;max-height:560px;border:1px solid #ddd;border-radius:6px}
+.pt{border-collapse:collapse;width:100%;font-size:12px;font-family:'Segoe UI',sans-serif}
+.pt thead tr{background:#1a4276;color:#fff;position:sticky;top:0;z-index:50}
+.pt th{padding:6px 9px;text-align:right;white-space:nowrap;border:1px solid #0d2b54;font-size:11px}
+.pt th.thl{text-align:left}
+.pt td{padding:4px 8px;border:1px solid #e8e8e8;white-space:nowrap;vertical-align:middle}
+.pt tr:nth-child(even){background:#fafafa}
+.pt tr:hover{background:#eaf3ff!important}
+.cls-a{background:#c0392b;color:#fff;font-weight:700;text-align:center;border-radius:3px;padding:2px 5px}
+.cls-b{background:#e67e22;color:#fff;font-weight:700;text-align:center;border-radius:3px;padding:2px 5px}
+.cls-c{background:#2980b9;color:#fff;font-weight:700;text-align:center;border-radius:3px;padding:2px 5px}
+.ss-col{background:#90EE90!important;font-weight:700;text-align:right}
+.mx-col{background:#d4f1c4!important;text-align:right}
+.num{text-align:right}
+.st-r{background:#e74c3c;color:#fff;font-weight:700;text-align:right}
+.st-o{background:#e67e22;color:#fff;text-align:right}
+.st-y{background:#f9e04b;color:#333;text-align:right}
+.st-g{background:#b7e1b0;color:#222;text-align:right}
+.th-ss{background:#2ecc71!important}
+.th-mx{background:#27ae60!important}
+/* Tooltip */
+.tip-host{position:relative;cursor:help}
+.tip-host .tip{
+  display:none;position:absolute;left:0;bottom:110%;z-index:99999;
+  background:#1a1a2e;color:#f0f0f0;border-radius:8px;padding:12px 14px;
+  min-width:320px;max-width:420px;box-shadow:0 6px 20px rgba(0,0,0,.55);
+  border:1px solid #444;pointer-events:none;white-space:normal;
+  font-size:11px;line-height:1.4
+}
+.tip-host:hover .tip{display:block}
+.tip-title{font-size:13px;font-weight:700;color:#7fc7ff;margin-bottom:8px}
+.tip table{width:100%;border-collapse:collapse}
+.tip th{color:#aaa;font-size:10px;text-align:left;padding:2px 4px;border-bottom:1px solid #333}
+.tip td{padding:3px 5px;color:#fff;border-bottom:1px solid #2a2a3a}
+.tip tr:last-child td{border-bottom:none}
+</style>
+"""
+            def _fmt(v):
+                if pd.isna(v): return "—"
+                return f"{int(round(v)):,}".replace(",",".")
+
+            def _cls_cell(cls):
+                c = {"A":"cls-a","B":"cls-b","C":"cls-c"}.get(str(cls),"")
+                return f'<span class="{c}">{cls}</span>'
+
+            def _st_cell(v, ss):
+                if pd.isna(v): return '<td class="num" style="color:#bbb">—</td>'
+                vi = int(round(v))
+                f  = _fmt(v)
+                if vi <= 0:   return f'<td class="st-r">{f}</td>'
+                if vi < ss:   return f'<td class="st-o">{f}</td>'
+                if vi < ss*1.15: return f'<td class="st-y">{f}</td>'
+                return f'<td class="st-g">{f}</td>'
+
+            headers = (
+                '<th class="thl" style="min-width:36px">CLS</th>'
+                '<th class="thl" style="min-width:75px">CÓDIGO</th>'
+                '<th class="thl" style="min-width:180px">DESCRIÇÃO</th>'
+                '<th style="min-width:65px">EST.INI</th>'
+                '<th class="th-ss" style="min-width:65px">EST.SEG.</th>'
+                '<th class="th-mx" style="min-width:65px">EST.MÁX.</th>'
+                '<th style="min-width:55px">LEAD(D)</th>'
             )
-            _df_f = _df_f[_mask]
-        if _sel_status == "Com ruptura":
-            _rupt_mask = (_df_f[_mes_labels].fillna(0) <= 0).any(axis=1)
-            _df_f = _df_f[_rupt_mask]
-        elif _sel_status == "Sem ruptura":
-            _ok_mask = (_df_f[_mes_labels].fillna(0) > 0).all(axis=1)
-            _df_f = _df_f[_ok_mask]
-        elif _sel_status == "Abaixo do SS":
-            _ss_mask = (
-                _df_f[_mes_labels].fillna(0)
-                .lt(_df_f["EST.SEG."].values.reshape(-1, 1))
-            ).any(axis=1)
-            _df_f = _df_f[_ss_mask]
+            for m in mcols:
+                headers += f'<th style="min-width:70px">{m}</th>'
 
-        _cf4.markdown(f"**{len(_df_f)}** materiais", unsafe_allow_html=True)
+            rows_html = []
+            for _, row in df_t.iterrows():
+                mat = str(row["material"])
+                ss  = int(row.get("EST.SEG.", 0) or 0)
+                tip_content = _tooltip_map.get(mat, "Sem pedidos registrados")
+                tip_html = (
+                    f'<div class="tip">'
+                    f'<div class="tip-title">📦 Pedidos — {mat}</div>'
+                    f'{tip_content}</div>'
+                )
+                cells = (
+                    f'<td>{_cls_cell(row.get("classe",""))}</td>'
+                    f'<td class="tip-host">{mat}{tip_html}</td>'
+                    f'<td>{str(row.get("descricao",""))[:42]}</td>'
+                    f'<td class="num">{_fmt(row.get("EST.INI",0))}</td>'
+                    f'<td class="ss-col">{_fmt(row.get("EST.SEG.",0))}</td>'
+                    f'<td class="mx-col">{_fmt(row.get("EST.MÁX.",0))}</td>'
+                    f'<td class="num">{int(row.get("LEAD(D)", LEAD_TIME_DIAS))}</td>'
+                )
+                for m in mcols:
+                    cells += _st_cell(row.get(m), ss)
+                rows_html.append(f"<tr>{cells}</tr>")
 
-        # Banner informativo
+            n_rows = len(rows_html)
+            height = min(max(200, 50 + n_rows * 34), 600)
+            html = (
+                f'{CSS}<div class="pt-wrap" style="height:{height}px">'
+                f'<table class="pt"><thead><tr>{headers}</tr></thead>'
+                f'<tbody>{"".join(rows_html)}</tbody></table></div>'
+            )
+            return html
+
+        # ── Subtabs: Com Pedidos / Sem Pedidos ────────────────────────────────
         st.info(
-            "As rupturas (células vermelhas) são **esperadas** — representam o período "
-            "de trânsito do pedido (entre emissão e entrega). O Plano de Compras já contém "
-            "os pedidos planejados para resolver essas rupturas.",
+            "Células **vermelhas** = ruptura esperada durante o trânsito do pedido. "
+            "Passe o mouse sobre o **código** do material para ver os pedidos em andamento.",
             icon="ℹ️",
         )
-
-        # ── Tabela estilizada ─────────────────────────────────────────────────
-        _cols_fixas = ["classe", "material", "descricao", "EST.INI", "EST.SEG.", "EST.MÁX.", "LEAD(D)"]
-        _cols_view  = _cols_fixas + [m for m in _mes_labels if m in _df_f.columns]
-        _tbl = _df_f[_cols_view].copy().reset_index(drop=True)
-
-        # Truncar descrição longa
-        _tbl["descricao"] = _tbl["descricao"].str[:40]
-
-        # Renomear para exibição
-        _tbl = _tbl.rename(columns={
-            "classe"   : "CLS",
-            "material" : "CÓDIGO",
-            "descricao": "DESCRIÇÃO",
-        })
-        _mes_display = [m for m in _mes_labels if m in _cols_view]
-
-        def _style_proj(row):
-            styles = pd.Series("", index=row.index)
-            ss = row.get("EST.SEG.", 0) or 0
-
-            # Badge de classe
-            _cls_bg = {"A": "background-color:#c0392b;color:white;font-weight:bold;text-align:center",
-                       "B": "background-color:#e67e22;color:white;font-weight:bold;text-align:center",
-                       "C": "background-color:#2980b9;color:white;font-weight:bold;text-align:center"}
-            styles["CLS"] = _cls_bg.get(str(row.get("CLS", "")), "")
-
-            # Colunas de referência
-            styles["EST.SEG."] = "background-color:#b7e1b0;font-weight:bold"
-            styles["EST.MÁX."] = "background-color:#d9f2d0"
-
-            # Células mensais
-            for col in _mes_display:
-                if col not in row.index:
-                    continue
-                v = row[col]
-                if pd.isna(v):
-                    styles[col] = "color:#aaaaaa"
-                elif v <= 0:
-                    styles[col] = "background-color:#e74c3c;color:white;font-weight:bold"
-                elif v < ss:
-                    styles[col] = "background-color:#e67e22;color:white"
-                elif v < ss * 1.15:
-                    styles[col] = "background-color:#f9e04b"
-                else:
-                    styles[col] = "background-color:#b7e1b0"
-            return styles
-
-        _n_cells = _tbl.shape[0] * _tbl.shape[1]
-        pd.set_option("styler.render.max_elements", max(_n_cells, 262144))
-
-        _styled = (
-            _tbl.style
-            .apply(_style_proj, axis=1)
-            .format(
-                {c: lambda v: "—" if pd.isna(v) else f"{int(round(v)):,}".replace(",", ".")
-                 for c in _mes_display},
-                na_rep="—",
-            )
-            .format({"EST.INI": lambda v: f"{int(v):,}".replace(",","."),
-                     "EST.SEG.": lambda v: f"{int(v):,}".replace(",","."),
-                     "EST.MÁX.": lambda v: f"{int(v):,}".replace(",",".")},
-                    na_rep="0")
-        )
-
-        st.dataframe(_styled, use_container_width=True, height=500)
+        _stab_com, _stab_sem = st.tabs([
+            "📦 Com Pedidos (realizados + MRP)",
+            "📉 Sem Pedidos (consumo puro)",
+        ])
+        with _stab_com:
+            _stc.html(_render_proj_html(_df_com, _mcols_com, "Com Pedidos"), height=640, scrolling=True)
+        with _stab_sem:
+            _stc.html(_render_proj_html(_df_sem, _mcols_sem, "Sem Pedidos"), height=640, scrolling=True)
 
     with tab_ped:
         st.subheader("Pedidos a Gerar")
