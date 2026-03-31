@@ -1277,12 +1277,72 @@ if "resultado" in st.session_state:
                 if _vis_orc_f.empty:
                     st.info("Sem dados orçamentários para os filtros selecionados.")
                 else:
-                    # Gráfico usa dados sem a linha TOTAL
                     _chart_financeiro(_vis_orc_f.drop("TOTAL GERAL", errors="ignore"), "Compromisso por Mês de Emissão")
+                    st.caption("💡 Clique em uma linha para ver o detalhamento dos pedidos daquele mês.")
                     agg_fmt = _vis_orc_f.copy()
                     for _c in agg_fmt.columns:
                         agg_fmt[_c] = agg_fmt[_c].apply(_fmt_brl_contabil)
-                    st.dataframe(agg_fmt, use_container_width=True)
+                    _sel_orc = st.dataframe(
+                        agg_fmt,
+                        use_container_width=True,
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        key="orc_tbl_sel",
+                    )
+
+                    # ── Drill-down Orçamentário ───────────────────────────────
+                    _orc_row_idxs = _sel_orc.selection.rows if hasattr(_sel_orc, "selection") else []
+                    if _orc_row_idxs:
+                        _orc_mes = list(_vis_orc_f.index)[_orc_row_idxs[0]]
+                        if _orc_mes == "TOTAL GERAL":
+                            st.info("Selecione um mês específico (não o total) para ver o detalhamento.")
+                        else:
+                            st.markdown(f"#### 🔍 Detalhes · Emissão do Pedido: **{_orc_mes}**")
+                            _dd_orig_orc_opts = (
+                                ["Todas"] + sorted(_fin_f["origem"].dropna().unique().tolist())
+                                if not _fin_f.empty and "origem" in _fin_f.columns else ["Todas"]
+                            )
+                            _dd_orig_orc = st.selectbox("Filtrar por Origem", _dd_orig_orc_opts, key="orc_dd_orig")
+
+                            _detail_orc = _fin_f[_fin_f["mes_pedido"] == _orc_mes].copy()
+                            if _dd_orig_orc != "Todas":
+                                _detail_orc = _detail_orc[_detail_orc["origem"] == _dd_orig_orc]
+
+                            if _detail_orc.empty:
+                                st.info("Nenhum registro para este mês/origem.")
+                            else:
+                                _orc_dcols = [c for c in [
+                                    "material", "origem",
+                                    "mes_pedido", "mes_entrega",
+                                    "departamento", "programa_orcamentario",
+                                    "valor_rateado",
+                                ] if c in _detail_orc.columns]
+                                _detail_orc_show = (
+                                    _detail_orc[_orc_dcols]
+                                    .rename(columns={
+                                        "material"              : "Material",
+                                        "origem"                : "Origem",
+                                        "mes_pedido"            : "Mês Emissão",
+                                        "mes_entrega"           : "Mês Chegada",
+                                        "departamento"          : "Departamento",
+                                        "programa_orcamentario" : "Programa",
+                                        "valor_rateado"         : "Valor Rateado",
+                                    })
+                                    .sort_values(["Mês Chegada", "Material"])
+                                    .reset_index(drop=True)
+                                )
+                                _tot_orc = _detail_orc_show["Valor Rateado"].sum()
+                                st.caption(
+                                    f"{len(_detail_orc_show)} linha(s) · "
+                                    f"Total: **{_fmt_brl_contabil(_tot_orc)}**"
+                                )
+                                st.dataframe(
+                                    _detail_orc_show.style.format(
+                                        {"Valor Rateado": _fmt_brl_contabil}, na_rep="-"
+                                    ),
+                                    use_container_width=True,
+                                    height=380,
+                                )
 
             with subtab_cx:
                 st.caption(
@@ -1294,12 +1354,78 @@ if "resultado" in st.session_state:
                     st.info("Nenhuma parcela de pagamento para os filtros selecionados.")
                 else:
                     _chart_financeiro(_vis_cx_f.drop("TOTAL GERAL", errors="ignore"), "Desembolso por Mês de Pagamento")
+                    st.caption("💡 Clique em uma linha para rastrear de onde vem o desembolso daquele mês.")
                     agg_cx_fmt = _vis_cx_f.copy()
                     for _c in agg_cx_fmt.columns:
                         agg_cx_fmt[_c] = agg_cx_fmt[_c].apply(_fmt_brl_contabil)
-                    st.dataframe(agg_cx_fmt, use_container_width=True)
+                    _sel_cx = st.dataframe(
+                        agg_cx_fmt,
+                        use_container_width=True,
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        key="cx_tbl_sel",
+                    )
 
-                    # ── Rastreio: Emissão → Entrega → Pagamento ───────────────
+                    # ── Drill-down Caixa ──────────────────────────────────────
+                    _cx_row_idxs = _sel_cx.selection.rows if hasattr(_sel_cx, "selection") else []
+                    if _cx_row_idxs:
+                        _cx_mes = list(_vis_cx_f.index)[_cx_row_idxs[0]]
+                        if _cx_mes == "TOTAL GERAL":
+                            st.info("Selecione um mês específico (não o total) para ver o detalhamento.")
+                        else:
+                            st.markdown(f"#### 🔍 Detalhes · Desembolso em: **{_cx_mes}**")
+                            _dd_orig_cx_opts = (
+                                ["Todas"] + sorted(_fluxo_f["origem"].dropna().unique().tolist())
+                                if not _fluxo_f.empty and "origem" in _fluxo_f.columns else ["Todas"]
+                            )
+                            _dd_orig_cx = st.selectbox("Filtrar por Origem", _dd_orig_cx_opts, key="cx_dd_orig")
+
+                            _detail_cx = _fluxo_f[_fluxo_f["mes_pagamento"] == _cx_mes].copy()
+                            if _dd_orig_cx != "Todas":
+                                _detail_cx = _detail_cx[_detail_cx["origem"] == _dd_orig_cx]
+
+                            if _detail_cx.empty:
+                                st.info("Nenhum registro para este mês/origem.")
+                            else:
+                                _cx_dcols = [c for c in [
+                                    "material", "origem",
+                                    "mes_emissao",   # data geração pedido
+                                    "mes_entrega",   # data chegada do material
+                                    "prazo_dias",    # prazo de pagamento
+                                    "mes_pagamento", # data desembolso
+                                    "departamento", "programa_orcamentario",
+                                    "valor_rateado",
+                                ] if c in _detail_cx.columns]
+                                _detail_cx_show = (
+                                    _detail_cx[_cx_dcols]
+                                    .rename(columns={
+                                        "material"              : "Material",
+                                        "origem"                : "Origem",
+                                        "mes_emissao"           : "Data Emissão PO",
+                                        "mes_entrega"           : "Data Chegada",
+                                        "prazo_dias"            : "Prazo Pgto (dias)",
+                                        "mes_pagamento"         : "Data Desembolso",
+                                        "departamento"          : "Departamento",
+                                        "programa_orcamentario" : "Programa",
+                                        "valor_rateado"         : "Valor Desembolso",
+                                    })
+                                    .sort_values(["Data Chegada", "Material"])
+                                    .reset_index(drop=True)
+                                )
+                                _tot_cx = _detail_cx_show["Valor Desembolso"].sum()
+                                st.caption(
+                                    f"{len(_detail_cx_show)} parcela(s) · "
+                                    f"Total: **{_fmt_brl_contabil(_tot_cx)}**"
+                                )
+                                st.dataframe(
+                                    _detail_cx_show.style.format(
+                                        {"Valor Desembolso": _fmt_brl_contabil}, na_rep="-"
+                                    ),
+                                    use_container_width=True,
+                                    height=380,
+                                )
+
+                    # ── Rastreio completo: Emissão → Entrega → Pagamento ──────
                     with st.expander("🔍 Rastreio: Emissão → Entrega → Pagamento"):
                         st.caption(
                             "Cada linha representa uma parcela de pagamento rateada. "
