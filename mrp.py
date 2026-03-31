@@ -765,6 +765,7 @@ def ler_lead_times(source) -> dict:
 
     df["_mat"] = df[col_mat].astype(str).str.strip()
     df["_lt"]  = pd.to_numeric(df[col_lt], errors="coerce").fillna(LEAD_TIME_DIAS)
+    # [FIX 6] Chaves normalizadas como str.strip() para consistência com demanda/estoque
     lt_dict = {row["_mat"]: int(row["_lt"]) for _, row in df.iterrows() if row["_mat"]}
 
     print(f"  Colunas usadas        : material='{col_mat}', lead_time='{col_lt}'")
@@ -1067,22 +1068,33 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
 def passo_1_2_demanda() -> pd.DataFrame:
     separador("PASSO 1-2 │ LER E CONSOLIDAR DEMANDA")
 
-    # ── Roteamento: formato bruto DTM  vs  demanda.csv padrão ────────────────
-    caminho_raw = (
-        os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW)
-        if ARQUIVO_DEMANDA_RAW
-        else None
-    )
+    # [FIX 1] Fonte única de demanda: formato DTM obrigatório.
+    # Bifurcação silenciosa para demanda.csv legado foi removida — o sistema
+    # falha explicitamente se o arquivo configurado não existir.
+    if not ARQUIVO_DEMANDA_RAW:
+        raise ValueError(
+            "ARQUIVO_DEMANDA_RAW não configurado em mrp.py. "
+            "Defina o nome do arquivo de demanda no formato DTM."
+        )
+    caminho = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW)
+    if not os.path.exists(caminho):
+        raise FileNotFoundError(
+            f"Arquivo de demanda não encontrado: {caminho}\n"
+            f"Coloque o arquivo DTM em '{DIR_DADOS}/' ou ajuste ARQUIVO_DEMANDA_RAW."
+        )
 
-    if caminho_raw and os.path.exists(caminho_raw):
-        # Fonte: arquivo bruto DTM — aplica mapeamento e normalização
-        df_raw = transformar_demanda_dtm(caminho_raw)
-        df = df_raw[["material", "mes", "quantidade"]].copy()
-        separador()
-    else:
-        # Fonte: demanda.csv já no formato padrão material|mes|quantidade
-        df = pd.read_csv(os.path.join(DIR_DADOS, "demanda.csv"), encoding="latin-1", sep=",")
-        df["mes"] = pd.to_datetime(df["mes"], format="%Y-%m").dt.to_period("M").astype(str)
+    df_raw = transformar_demanda_dtm(caminho)
+
+    # Valida colunas obrigatórias produzidas pelo transformador
+    _cols_obrig = {"material", "mes", "quantidade"}
+    _ausentes = _cols_obrig - set(df_raw.columns)
+    if _ausentes:
+        raise ValueError(
+            f"transformar_demanda_dtm não produziu colunas obrigatórias: {_ausentes}. "
+            f"Colunas disponíveis: {list(df_raw.columns)}"
+        )
+
+    df = df_raw[["material", "mes", "quantidade"]].copy()
 
     # ── Consolidação final (agrupa caso haja duplicidades de chave) ───────────
     demanda = df.groupby(["material", "mes"], as_index=False)["quantidade"].sum()
@@ -1099,14 +1111,24 @@ def passo_1_2_demanda() -> pd.DataFrame:
 def passo_3_estoque() -> pd.DataFrame:
     separador("PASSO 3 │ CONSOLIDAR ESTOQUE (IGNORAR ENDEREÇAMENTO)")
 
-    # ── Detecção de formato: SAP tab-sep tem prioridade sobre estoque.csv legado ─
-    sap_path = os.path.join(DIR_DADOS, ARQ_ESTOQUE_SAP)
+    # [FIX 5] Fail-fast: SAP tab-sep tem prioridade; fallback legado só se
+    # estoque_sap.csv ausente. Falha explícita se nenhum arquivo existir.
+    sap_path    = os.path.join(DIR_DADOS, ARQ_ESTOQUE_SAP)
+    legado_path = os.path.join(DIR_DADOS, "estoque.csv")
+
     if os.path.exists(sap_path):
         consolidado = ler_estoque_sap(sap_path)
         salvar(consolidado, "01_estoque_consolidado.csv")
         return consolidado
 
-    df = pd.read_csv(os.path.join(DIR_DADOS, "estoque.csv"), encoding="latin-1", sep=",")
+    if not os.path.exists(legado_path):
+        raise FileNotFoundError(
+            f"Nenhum arquivo de estoque encontrado.\n"
+            f"  Esperado (SAP):   {sap_path}\n"
+            f"  Esperado (legado):{legado_path}"
+        )
+
+    df = pd.read_csv(legado_path, encoding="latin-1", sep=",")
     print(f"  Linhas de endereçamento: {len(df)}")
 
     consolidado = (
@@ -1519,11 +1541,18 @@ def passos_6_11_mrp(
     materiais: pd.DataFrame,
     lead_time_dias: int = LEAD_TIME_DIAS,
     lead_times_dict: dict | None = None,
+    horizonte_finito: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Parâmetro 'lead_times_dict' é opcional (dict material→dias).
+    """
+    Parâmetro 'lead_times_dict' é opcional (dict material→dias).
     Quando fornecido, cada material usa seu próprio lead time;
     ausentes no dict usam 'lead_time_dias' como fallback.
-    Quando None, comportamento idêntico ao original."""
+
+    [FIX 3] horizonte_finito=True (padrão): aplica teto_pedido para evitar
+    compras além da demanda restante conhecida (comportamento de phase-out).
+    horizonte_finito=False: remove o teto — útil quando a demanda futura é
+    incompleta e não deve limitar as compras do período atual.
+    """
     separador("PASSOS 6-11 │ CÁLCULO MRP MÊS A MÊS")
 
     hoje      = date.today()
@@ -1536,6 +1565,11 @@ def passos_6_11_mrp(
     print(f"  Lead time   : {lead_time_dias} dias corridos")
 
     periodos_set = set(periodos)   # lookup O(1) para verificar se chegada está no horizonte
+
+    # [FIX 6] Normalizar lead_times_dict: converter todas as chaves para str.strip()
+    # Evita miss por divergência de tipo (int vs str) ou espaços residuais do SAP.
+    if lead_times_dict:
+        lead_times_dict = {str(k).strip(): int(v) for k, v in lead_times_dict.items()}
 
     # ── Lookups ───────────────────────────────────────────────────────────────
     dem_lkp: dict[str, dict[str, float]] = {}
@@ -1550,6 +1584,9 @@ def passos_6_11_mrp(
     estoque_map = dict(zip(estoque["material"], estoque["estoque_total"]))
     desc_map    = dict(zip(materiais["material"], materiais["descricao"]))
     preco_map   = dict(zip(abc["material"], abc["valor_unitario"]))
+
+    # [FIX 6] Identificar materiais sem lead time específico (para log único por material)
+    _sem_lt_especifico: set[str] = set()
 
     todos_mats = sorted(set(estoque["material"]) | set(demanda["material"]))
 
@@ -1592,7 +1629,15 @@ def passos_6_11_mrp(
             # ── Estoque virtual: posição real de cobertura (evita Panic Buying) ─
             # Considera APENAS as entradas que chegam dentro do lead time de um novo
             # pedido emitido agora — evita mascarar rupturas com entradas distantes.
-            lt = lead_times_dict.get(mat, lead_time_dias) if lead_times_dict else lead_time_dias
+            # [FIX 6] Chave já normalizada acima; fallback controlado com log único.
+            if lead_times_dict:
+                _mat_key = str(mat).strip()
+                lt = lead_times_dict.get(_mat_key, lead_time_dias)
+                if lt == lead_time_dias and _mat_key not in lead_times_dict and _mat_key not in _sem_lt_especifico:
+                    print(f"  ⚠ Lead time não encontrado para '{mat}' — usando default {lead_time_dias}d")
+                    _sem_lt_especifico.add(_mat_key)
+            else:
+                lt = lead_time_dias
             idx_chegada = min(i + math.ceil(lt / 30), n_per - 1)
             entradas_em_transito = sum(
                 ent_mat.get(periodos[k], 0.0) + novas_ent.get(periodos[k], 0.0)
@@ -1603,9 +1648,11 @@ def passos_6_11_mrp(
             if classe == "C":
                 # Trigger: cobertura < 1 mês (risco de ruptura)
                 # Ao pedir: cobrir os próximos CLASSE_C_COBERTURA_MESES meses
+                # [FIX 2] ss_display usava MESES_COBERTURA_SS (3m, regra de A/B).
+                # Classe C deve exibir e calcular cobertura com CLASSE_C_COBERTURA_MESES.
                 ss_display = sum(
                     dem_mat.get(periodos[j], 0.0)
-                    for j in range(i, min(i + MESES_COBERTURA_SS, n_per))
+                    for j in range(i, min(i + CLASSE_C_COBERTURA_MESES, n_per))
                 )
                 if estoque_virtual < dem:
                     ss_ordem = sum(
@@ -1624,12 +1671,23 @@ def passos_6_11_mrp(
                 nec_ideal = max(0.0, ss_display - estoque_virtual)
 
             # ── Teto Phase-Out: nunca pedir além da demanda restante conhecida ─
-            # Se o estoque_virtual já cobre tudo até idx_fim_dem, teto = 0.
-            demanda_restante_ano = sum(dem_mat.get(periodos[j], 0.0)
-                                       for j in range(i, idx_fim_dem + 1))
-            teto_pedido = max(0.0, demanda_restante_ano - estoque_virtual)
-
-            nec = min(nec_ideal, teto_pedido)
+            # [FIX 3+4] horizonte_finito controla se o teto é aplicado.
+            # [FIX 4] supply_total usa TODAS as entradas futuras até idx_fim_dem
+            # (não apenas a janela de lead time de estoque_virtual), evitando
+            # que o teto subestime o supply já comprometido e gere over-ordering.
+            if horizonte_finito:
+                demanda_restante = sum(
+                    dem_mat.get(periodos[j], 0.0)
+                    for j in range(i, idx_fim_dem + 1)
+                )
+                supply_total = est_proj + sum(
+                    ent_mat.get(periodos[k], 0.0) + novas_ent.get(periodos[k], 0.0)
+                    for k in range(i + 1, idx_fim_dem + 1)
+                )
+                teto_pedido = max(0.0, demanda_restante - supply_total)
+                nec = min(nec_ideal, teto_pedido)
+            else:
+                nec = nec_ideal
 
             if nec > 0:
                 pedido = math.ceil(nec)
@@ -2067,15 +2125,12 @@ def main() -> None:
                                     demanda, estoque, entradas, abc, materiais,
                                     lead_time_dias=LEAD_TIME_DIAS,
                                     lead_times_dict=lt_dict or None,
+                                    horizonte_finito=True,
                                 )
 
-    # Recuperar detalhamento da demanda (departamento/programa) para rateio
-    caminho_raw = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW) if ARQUIVO_DEMANDA_RAW else None
-    demanda_detail = (
-        transformar_demanda_dtm(caminho_raw)
-        if caminho_raw and os.path.exists(caminho_raw)
-        else None
-    )
+    # [FIX 1] Reutiliza o mesmo arquivo único de demanda para o rateio — sem bifurcação.
+    caminho_raw    = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW)
+    demanda_detail = transformar_demanda_dtm(caminho_raw) if os.path.exists(caminho_raw) else None
     df_rateio = passo_12_rateio(df_ped, df_abertos_fut, demanda_detail=demanda_detail)
 
     _imprimir_mrp_pivot(df_mrp)
