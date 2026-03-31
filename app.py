@@ -531,6 +531,8 @@ if _disparar:
                             "prazo_dias"   : _d,
                             "mes_pagamento": (_data_base + timedelta(days=_d)).strftime("%Y-%m"),
                             "valor_parcela": _vbase + (_resto if _i == _n - 1 else 0),
+                            "num_parcela"  : _i + 1,
+                            "tot_parcelas" : _n,
                         })
                 if _parcelas:
                     _df_fluxo = pd.DataFrame(_parcelas)
@@ -1387,10 +1389,21 @@ if "resultado" in st.session_state:
                             if _detail_cx.empty:
                                 st.info("Nenhum registro para este mês/origem.")
                             else:
+                                # Gera coluna de parcela legível antes de filtrar colunas
+                                if "num_parcela" in _detail_cx.columns and "tot_parcelas" in _detail_cx.columns:
+                                    _detail_cx["Parcela"] = (
+                                        _detail_cx["num_parcela"].astype(int).astype(str)
+                                        + "º de "
+                                        + _detail_cx["tot_parcelas"].astype(int).astype(str)
+                                    )
+                                else:
+                                    _detail_cx["Parcela"] = "-"
+
                                 _cx_dcols = [c for c in [
                                     "material", "origem",
                                     "mes_emissao",   # data geração pedido
                                     "mes_entrega",   # data chegada do material
+                                    "Parcela",       # 1º de 2, 2º de 2, ...
                                     "prazo_dias",    # prazo de pagamento
                                     "mes_pagamento", # data desembolso
                                     "departamento", "programa_orcamentario",
@@ -1433,12 +1446,23 @@ if "resultado" in st.session_state:
                             "e **Mês Entrega** (quando o material chega ao estoque)."
                         )
                         if not _fluxo_f.empty:
+                            _fluxo_trace = _fluxo_f.copy()
+                            if "num_parcela" in _fluxo_trace.columns and "tot_parcelas" in _fluxo_trace.columns:
+                                _fluxo_trace["parcela_label"] = (
+                                    _fluxo_trace["num_parcela"].astype(int).astype(str)
+                                    + "º de "
+                                    + _fluxo_trace["tot_parcelas"].astype(int).astype(str)
+                                )
+                            else:
+                                _fluxo_trace["parcela_label"] = "-"
+
                             _trace_cols = [c for c in [
                                 "origem", "material", "departamento", "programa_orcamentario",
-                                "mes_emissao", "mes_entrega", "prazo_dias", "mes_pagamento", "valor_rateado",
-                            ] if c in _fluxo_f.columns]
+                                "mes_emissao", "mes_entrega",
+                                "parcela_label", "prazo_dias", "mes_pagamento", "valor_rateado",
+                            ] if c in _fluxo_trace.columns]
                             df_trace = (
-                                _fluxo_f[_trace_cols]
+                                _fluxo_trace[_trace_cols]
                                 .rename(columns={
                                     "origem"                : "Origem",
                                     "material"              : "Material",
@@ -1446,6 +1470,7 @@ if "resultado" in st.session_state:
                                     "programa_orcamentario" : "Programa",
                                     "mes_emissao"           : "Mês Emissão",
                                     "mes_entrega"           : "Mês Entrega",
+                                    "parcela_label"         : "Parcela",
                                     "prazo_dias"            : "Prazo (dias)",
                                     "mes_pagamento"         : "Mês Pagamento",
                                     "valor_rateado"         : "Valor Rateado",
