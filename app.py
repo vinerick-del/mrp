@@ -531,7 +531,7 @@ if _disparar:
                             "prazo_dias"          : _d,
                             "mes_pagamento"       : (_data_base + timedelta(days=_d)).strftime("%Y-%m"),
                             "valor_pedido_total"  : _row["valor_pedido"],   # valor integral do pedido (sem split)
-                            "valor_parcela"       : _vbase + (_resto if _i == _n - 1 else 0),
+                            "valor_parcela"       : _resto if _i == _n - 1 else _vbase,
                             "num_parcela"         : _i + 1,
                             "tot_parcelas"        : _n,
                         })
