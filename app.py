@@ -519,9 +519,9 @@ if _disparar:
                             "pedido"      : _pedido_ref,
                             "valor_pedido": _row["valor_pedido"],
                         })
-                    _n          = len(_dias)
-                    _vbase      = _row["valor_pedido"] // _n
-                    _resto      = _row["valor_pedido"] - _vbase * _n
+                    _n     = len(_dias)
+                    _vbase = round(_row["valor_pedido"] / _n, 2)
+                    _resto = round(_row["valor_pedido"] - (_vbase * (_n - 1)), 2)
                     for _i, _d in enumerate(_dias):
                         _parcelas.append({
                             "origem"       : _row["origem"],

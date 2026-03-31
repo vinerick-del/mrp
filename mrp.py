@@ -284,7 +284,8 @@ def ler_remessas_sap(source) -> tuple:
     atrasados = df["mes_remessa"] < mes_atual
     if atrasados.any():
         print(f"  Realocar atrasados   : {atrasados.sum()} linha(s) → {mes_atual}")
-        df.loc[atrasados, "mes_remessa"] = mes_atual
+        df.loc[atrasados, "mes_remessa"]   = mes_atual
+        df.loc[atrasados, "data_remessa"]  = pd.to_datetime(date.today())
 
     df_fut = df[df["mes_remessa"] >= mes_atual].copy()
     df_fut["valor_total_pedido"] = df_fut["quantidade"] * df_fut["valor_unitario_pedido"]
@@ -622,6 +623,10 @@ def ler_historico_mb51(source) -> pd.DataFrame:
                      if c.strip().lower() in ("quantidade", "qty", "qtd.", "qtd",
                                               "qtd. um registro", "qtd.um registro",
                                               "quantidade em unidade de entrada")), None)
+    col_ped  = next((c for c in df.columns
+                     if c.strip().lower() in ("pedido", "purchase order",
+                                              "documento de compras", "nº pedido",
+                                              "no. pedido", "doc. compras")), None)
 
     ausentes = [n for n, c in [("Tipo Mov.", col_mov), ("Data", col_data),
                                 ("Material", col_mat), ("Valor", col_val)] if c is None]
@@ -639,6 +644,11 @@ def ler_historico_mb51(source) -> pd.DataFrame:
         df = df.rename(columns={col_qtd: "_qtd_raw"})
     else:
         df["_qtd_raw"] = "0"
+    if col_ped:
+        df = df.rename(columns={col_ped: "numero_pedido"})
+        df["numero_pedido"] = df["numero_pedido"].astype(str).str.strip()
+    else:
+        df["numero_pedido"] = None
 
     # ── Filtrar apenas 101 e 102 ──────────────────────────────────────────────
     # Normalização robusta: remove espaços, sufixo ".0" (quando pandas leu como float),
@@ -696,9 +706,9 @@ def ler_historico_mb51(source) -> pd.DataFrame:
     print(f"  │  TOTAL GERAL : R$ {df['valor'].sum():>15,.2f}")
     print("  └───────────────────────────────────────────────────────")
 
-    # ── Agrupar por material + mês (arredondado) ──────────────────────────────
+    # ── Agrupar por material + mês + pedido (preserva numero_pedido p/ política pag.) ─
     resultado = (
-        df.groupby(["material", "mes_entrega"], as_index=False)
+        df.groupby(["material", "mes_entrega", "numero_pedido"], as_index=False, dropna=False)
         .agg(quantidade=("quantidade", "sum"), valor_pedido=("valor", "sum"))
     )
     resultado["quantidade"]   = resultado["quantidade"].round(3)
@@ -1385,7 +1395,8 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     atrasados = df["mes_remessa"] < mes_atual
     if atrasados.any():
         print(f"  Realocar atrasados   : {atrasados.sum()} linha(s) → {mes_atual}")
-        df.loc[atrasados, "mes_remessa"] = mes_atual
+        df.loc[atrasados, "mes_remessa"]  = mes_atual
+        df.loc[atrasados, "data_remessa"] = pd.to_datetime(date.today())
 
     df_fut = df[df["mes_remessa"] >= mes_atual].copy()
     # valor_total_pedido já calculado acima; recalcula apenas se ausente
