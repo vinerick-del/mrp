@@ -155,6 +155,13 @@ def _ler_sap_tabsep(source) -> pd.DataFrame:
 
     if best is None or best.empty:
         raise ValueError("Não foi possível ler o arquivo SAP.")
+    # Normalizar nomes de colunas: remover quebras de linha e espaços extras
+    best.columns = (
+        best.columns
+        .str.replace(r"[\r\n]+", " ", regex=True)   # \n → espaço
+        .str.replace(r" {2,}", " ", regex=True)      # múltiplos espaços → um
+        .str.strip()
+    )
     return best
 
 
