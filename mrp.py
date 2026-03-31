@@ -1579,11 +1579,13 @@ def passos_6_11_mrp(
             nec         = 0.0
 
             # ── Estoque virtual: posição real de cobertura (evita Panic Buying) ─
-            # Inclui tudo que já está em trânsito (pedidos existentes + MRP),
-            # impedindo que o sistema "tape o mesmo buraco" em meses consecutivos.
+            # Considera APENAS as entradas que chegam dentro do lead time de um novo
+            # pedido emitido agora — evita mascarar rupturas com entradas distantes.
+            lt = lead_times_dict.get(mat, lead_time_dias) if lead_times_dict else lead_time_dias
+            idx_chegada = min(i + math.ceil(lt / 30), n_per - 1)
             entradas_em_transito = sum(
                 ent_mat.get(periodos[k], 0.0) + novas_ent.get(periodos[k], 0.0)
-                for k in range(i + 1, n_per)
+                for k in range(i + 1, idx_chegada + 1)
             )
             estoque_virtual = est_proj + entradas_em_transito
 
@@ -1621,10 +1623,7 @@ def passos_6_11_mrp(
             if nec > 0:
                 pedido = math.ceil(nec)
 
-                # ── Lead time em DIAS CORRIDOS ────────────────────────────────
-                # data_chegada = data_pedido + lead_time_dias
-                # Entrada alocada no mês da data_chegada
-                lt = lead_times_dict.get(mat, lead_time_dias) if lead_times_dict else lead_time_dias
+                # ── Lead time já calculado acima (usado em idx_chegada) ───────
                 per_entrega, data_ped, data_cheg = calcular_periodo_entrega(
                     per, lt
                 )
