@@ -537,10 +537,25 @@ def ler_materiais(source) -> pd.DataFrame:
         "VALOR UNITARIO" : "valor_unitario",
         "PRECO"          : "valor_unitario",
         "PREÇO"          : "valor_unitario",
-        "LEAD_TIME"      : "lead_time_dias",
-        "LEAD TIME"      : "lead_time_dias",
-        "LEADTIME"       : "lead_time_dias",
-        "LEAD_TIME_DIAS" : "lead_time_dias",
+        "LEAD_TIME"               : "lead_time_dias",
+        "LEAD TIME"               : "lead_time_dias",
+        "LEADTIME"                : "lead_time_dias",
+        "LEAD_TIME_DIAS"          : "lead_time_dias",
+        # nomes SAP em português
+        "LEAD TIME PLANEJ."       : "lead_time_dias",
+        "LEAD TIME PLANEJADO"     : "lead_time_dias",
+        "PRAZO DE ENTREGA"        : "lead_time_dias",
+        "PRAZO ENTREGA"           : "lead_time_dias",
+        "PRAZO ENTR.PLANEJ."      : "lead_time_dias",
+        "PRAZO ENTR PLANEJ"       : "lead_time_dias",
+        "TEMPO DE REPOSIÇÃO"      : "lead_time_dias",
+        "TEMPO REPOSICAO"         : "lead_time_dias",
+        "TEMPO REPOSIÇÃO"         : "lead_time_dias",
+        "TEMPO ENTREGA"           : "lead_time_dias",
+        "TEMPO ENTREGA PLANEJ."   : "lead_time_dias",
+        "LT DIAS"                 : "lead_time_dias",
+        "LT"                      : "lead_time_dias",
+        "DIAS"                    : "lead_time_dias",
     }
     rename = {c: col_aliases[c.upper().strip()]
               for c in df.columns if c.upper().strip() in col_aliases}
@@ -689,30 +704,59 @@ def ler_historico_mb51(source) -> pd.DataFrame:
 # ── Parser File 5: Lead Times ──────────────────────────────────────────────────
 def ler_lead_times(source) -> dict:
     """
-    Lê arquivo CSV simples  material,lead_time_dias.
+    Lê arquivo de lead times (CSV ou exportação SAP).
+    Aceita múltiplos nomes de coluna para material e lead time.
     Retorna dict  {material_str: lead_time_int}.
-    Materiais ausentes devem usar LEAD_TIME_DIAS (default 60 dias).
     """
     separador("PARSER │ LEAD TIMES (File 5)")
     try:
-        if hasattr(source, "seek"):
-            source.seek(0)
-        df = pd.read_csv(source, dtype=str)
+        df = _ler_sap_tabsep(source)
     except Exception as exc:
-        print(f"  ⚠ Não foi possível ler lead_times: {exc} — usando default {LEAD_TIME_DIAS}d para todos")
+        print(f"  ⚠ Não foi possível ler lead_times: {exc} — usando default {LEAD_TIME_DIAS}d")
         return {}
 
-    if "material" not in df.columns or "lead_time_dias" not in df.columns:
-        print(f"  ⚠ Colunas esperadas: material, lead_time_dias — usando default para todos")
-        return {}
+    df.columns = df.columns.str.strip()
 
-    df["lead_time_dias"] = pd.to_numeric(df["lead_time_dias"], errors="coerce").fillna(LEAD_TIME_DIAS)
-    lt_dict = {
-        str(row["material"]).strip(): int(row["lead_time_dias"])
-        for _, row in df.iterrows()
+    # ── Aliases aceitos para a coluna de material ──────────────────────────────
+    _MAT_ALIASES = {
+        "material", "código", "codigo", "cod. material",
+        "código material", "nr. material", "nº material",
     }
+    col_mat = next((c for c in df.columns if c.lower().strip() in _MAT_ALIASES), None)
+    if col_mat is None:
+        col_mat = df.columns[0]   # fallback: primeira coluna
+        print(f"  ⚠ Coluna 'material' não identificada — usando 1ª coluna: '{col_mat}'")
+
+    # ── Aliases aceitos para a coluna de lead time ─────────────────────────────
+    _LT_ALIASES = {
+        "lead_time_dias", "lead_time", "lead time", "leadtime",
+        "lead time planej.", "lead time planejado",
+        "prazo de entrega", "prazo entrega", "prazo entr.planej.",
+        "prazo entr planej", "tempo de reposição", "tempo reposição",
+        "tempo reposicao", "tempo entrega", "tempo entrega planej.",
+        "lt dias", "lt", "dias",
+    }
+    col_lt = next((c for c in df.columns if c.lower().strip() in _LT_ALIASES), None)
+    if col_lt is None:
+        # Tenta segunda coluna como fallback
+        if len(df.columns) >= 2:
+            col_lt = df.columns[1]
+            print(f"  ⚠ Coluna de lead time não identificada — usando 2ª coluna: '{col_lt}'")
+        else:
+            print(f"  ⚠ Nenhuma coluna de lead time encontrada. Colunas: {list(df.columns)}")
+            return {}
+
+    df["_mat"] = df[col_mat].astype(str).str.strip()
+    df["_lt"]  = pd.to_numeric(df[col_lt], errors="coerce").fillna(LEAD_TIME_DIAS)
+    lt_dict = {row["_mat"]: int(row["_lt"]) for _, row in df.iterrows() if row["_mat"]}
+
+    print(f"  Colunas usadas        : material='{col_mat}', lead_time='{col_lt}'")
     print(f"  Lead times carregados : {len(lt_dict)} material(is)")
     print(f"  Default (ausentes)    : {LEAD_TIME_DIAS} dias")
+    if lt_dict:
+        amostra = list(lt_dict.items())[:5]
+        for mat, lt in amostra:
+            print(f"    {mat} → {lt}d")
     return lt_dict
 
 
