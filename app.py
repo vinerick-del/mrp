@@ -524,15 +524,16 @@ if _disparar:
                     _resto = round(_row["valor_pedido"] - (_vbase * (_n - 1)), 2)
                     for _i, _d in enumerate(_dias):
                         _parcelas.append({
-                            "origem"       : _row["origem"],
-                            "material"     : _row["material"],
-                            "mes_emissao"  : _row.get("mes_pedido", "-"),
-                            "mes_entrega"  : _row.get("mes_entrega", "-"),
-                            "prazo_dias"   : _d,
-                            "mes_pagamento": (_data_base + timedelta(days=_d)).strftime("%Y-%m"),
-                            "valor_parcela": _vbase + (_resto if _i == _n - 1 else 0),
-                            "num_parcela"  : _i + 1,
-                            "tot_parcelas" : _n,
+                            "origem"              : _row["origem"],
+                            "material"            : _row["material"],
+                            "mes_emissao"         : _row.get("mes_pedido", "-"),
+                            "mes_entrega"         : _row.get("mes_entrega", "-"),
+                            "prazo_dias"          : _d,
+                            "mes_pagamento"       : (_data_base + timedelta(days=_d)).strftime("%Y-%m"),
+                            "valor_pedido_total"  : _row["valor_pedido"],   # valor integral do pedido (sem split)
+                            "valor_parcela"       : _vbase + (_resto if _i == _n - 1 else 0),
+                            "num_parcela"         : _i + 1,
+                            "tot_parcelas"        : _n,
                         })
                 if _parcelas:
                     _df_fluxo = pd.DataFrame(_parcelas)
@@ -1401,13 +1402,15 @@ if "resultado" in st.session_state:
 
                                 _cx_dcols = [c for c in [
                                     "material", "origem",
-                                    "mes_emissao",   # data geração pedido
-                                    "mes_entrega",   # data chegada do material
-                                    "Parcela",       # 1º de 2, 2º de 2, ...
-                                    "prazo_dias",    # prazo de pagamento
-                                    "mes_pagamento", # data desembolso
+                                    "mes_emissao",        # data geração pedido
+                                    "mes_entrega",        # data chegada do material
+                                    "Parcela",            # 1º de 2, 2º de 2, ...
+                                    "prazo_dias",         # prazo de pagamento
+                                    "mes_pagamento",      # data desembolso
                                     "departamento", "programa_orcamentario",
-                                    "valor_rateado",
+                                    "valor_pedido_total", # valor integral do PO
+                                    "valor_parcela",      # valor da parcela (antes rateio)
+                                    "valor_rateado",      # valor da parcela após rateio
                                 ] if c in _detail_cx.columns]
                                 _detail_cx_show = (
                                     _detail_cx[_cx_dcols]
@@ -1420,20 +1423,23 @@ if "resultado" in st.session_state:
                                         "mes_pagamento"         : "Data Desembolso",
                                         "departamento"          : "Departamento",
                                         "programa_orcamentario" : "Programa",
-                                        "valor_rateado"         : "Valor Desembolso",
+                                        "valor_pedido_total"    : "Valor Total Pedido",
+                                        "valor_parcela"         : "Valor da Parcela",
+                                        "valor_rateado"         : "Valor Parcela Rateado",
                                     })
                                     .sort_values(["Data Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
-                                _tot_cx = _detail_cx_show["Valor Desembolso"].sum()
+                                _fmt_cx = {c: _fmt_brl_contabil for c in [
+                                    "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
+                                ] if c in _detail_cx_show.columns}
+                                _tot_cx = _detail_cx_show["Valor Parcela Rateado"].sum() if "Valor Parcela Rateado" in _detail_cx_show.columns else 0.0
                                 st.caption(
                                     f"{len(_detail_cx_show)} parcela(s) · "
-                                    f"Total: **{_fmt_brl_contabil(_tot_cx)}**"
+                                    f"Total rateado: **{_fmt_brl_contabil(_tot_cx)}**"
                                 )
                                 st.dataframe(
-                                    _detail_cx_show.style.format(
-                                        {"Valor Desembolso": _fmt_brl_contabil}, na_rep="-"
-                                    ),
+                                    _detail_cx_show.style.format(_fmt_cx, na_rep="-"),
                                     use_container_width=True,
                                     height=380,
                                 )
@@ -1459,7 +1465,8 @@ if "resultado" in st.session_state:
                             _trace_cols = [c for c in [
                                 "origem", "material", "departamento", "programa_orcamentario",
                                 "mes_emissao", "mes_entrega",
-                                "parcela_label", "prazo_dias", "mes_pagamento", "valor_rateado",
+                                "parcela_label", "prazo_dias", "mes_pagamento",
+                                "valor_pedido_total", "valor_parcela", "valor_rateado",
                             ] if c in _fluxo_trace.columns]
                             df_trace = (
                                 _fluxo_trace[_trace_cols]
@@ -1473,15 +1480,18 @@ if "resultado" in st.session_state:
                                     "parcela_label"         : "Parcela",
                                     "prazo_dias"            : "Prazo (dias)",
                                     "mes_pagamento"         : "Mês Pagamento",
-                                    "valor_rateado"         : "Valor Rateado",
+                                    "valor_pedido_total"    : "Valor Total Pedido",
+                                    "valor_parcela"         : "Valor da Parcela",
+                                    "valor_rateado"         : "Valor Parcela Rateado",
                                 })
                                 .sort_values(["Mês Pagamento", "Mês Entrega"])
                                 .reset_index(drop=True)
                             )
+                            _fmt_trace = {c: _fmt_brl_contabil for c in [
+                                "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
+                            ] if c in df_trace.columns}
                             st.dataframe(
-                                df_trace.style.format(
-                                    {"Valor Rateado": _fmt_brl_contabil}, na_rep="-"
-                                ),
+                                df_trace.style.format(_fmt_trace, na_rep="-"),
                                 use_container_width=True,
                                 height=400,
                             )
