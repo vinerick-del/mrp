@@ -493,10 +493,12 @@ if _disparar:
                 _vis_orc["Total"] = _vis_orc.sum(axis=1)
 
             # Visão de Caixa — explodir parcelas de pagamento
-            _vis_cx = pd.DataFrame()
+            _vis_cx   = pd.DataFrame()
+            _df_fluxo = pd.DataFrame()
+            _parcelas: list[dict] = []
             _log_sem_politica: list[dict] = []
             if not _df_fin.empty:
-                _parcelas: list[dict] = []
+                _parcelas = []
                 for _, _row in _df_fin.iterrows():
                     _data_base = _row["data_base_pagamento"]
                     if pd.isna(_data_base):
@@ -541,6 +543,44 @@ if _disparar:
                     )
                     _vis_cx["Total"] = _vis_cx.sum(axis=1)
 
+            # ── Rateio Financeiro: aplicar proporções dept/programa ────────────────
+            # Base de proporções derivada do df_rateio (já calcula proporcao 0-1)
+            _base_rateio = pd.DataFrame(
+                columns=["material", "departamento", "programa_orcamentario", "proporcao"]
+            )
+            if not df_rateio.empty and "proporcao_pct" in df_rateio.columns:
+                _base_rateio = (
+                    df_rateio[["material", "departamento", "programa_orcamentario", "proporcao_pct"]]
+                    .drop_duplicates()
+                    .copy()
+                )
+                _base_rateio["proporcao"] = _base_rateio["proporcao_pct"] / 100
+                _base_rateio = _base_rateio[
+                    ["material", "departamento", "programa_orcamentario", "proporcao"]
+                ]
+
+            def _aplicar_rateio_fin(df: pd.DataFrame, col_valor: str) -> pd.DataFrame:
+                if df.empty:
+                    return pd.DataFrame()
+                if _base_rateio.empty:
+                    out = df.copy()
+                    out["departamento"]          = "NÃO DEFINIDO"
+                    out["programa_orcamentario"] = "NÃO DEFINIDO"
+                    out["proporcao"]             = 1.0
+                    out["valor_rateado"]         = out[col_valor]
+                    return out
+                merged = df.merge(_base_rateio, on="material", how="left")
+                merged["departamento"]          = merged["departamento"].fillna("NÃO DEFINIDO")
+                merged["programa_orcamentario"] = merged["programa_orcamentario"].fillna("NÃO DEFINIDO")
+                merged["proporcao"]             = merged["proporcao"].fillna(1.0)
+                merged["valor_rateado"]         = merged[col_valor] * merged["proporcao"]
+                return merged
+
+            _df_fin_bruto   = _aplicar_rateio_fin(_df_fin, "valor_pedido")
+            _df_fluxo_bruto = _aplicar_rateio_fin(
+                _df_fluxo if _parcelas else pd.DataFrame(), "valor_parcela"
+            )
+
             # Renomear colunas do MRP para o formato solicitado
             df_mrp_out = df_mrp.rename(columns={
                 "periodo"           : "mes",
@@ -560,8 +600,10 @@ if _disparar:
                 "vis_caixa"        : _vis_cx,
                 "detalhe_fluxo"    : _df_fluxo if _parcelas else pd.DataFrame(),
                 "log_sem_politica" : _log_sem_politica,
-                "rateio"        : df_rateio,
-                "alertas_rup"   : alertas_rup,
+                "rateio"         : df_rateio,
+                "df_fin_bruto"   : _df_fin_bruto,
+                "df_fluxo_bruto" : _df_fluxo_bruto,
+                "alertas_rup"    : alertas_rup,
                 "alertas_cont"  : alertas_cont,
                 "contratos"     : contratos,
                 "abc"           : abc,
@@ -609,6 +651,8 @@ if "resultado" in st.session_state:
     vis_cx         = r.get("vis_caixa",        pd.DataFrame())
     detalhe_fluxo  = r.get("detalhe_fluxo",   pd.DataFrame())
     log_sem_pol    = r.get("log_sem_politica", [])
+    df_fin_bruto   = r.get("df_fin_bruto",    pd.DataFrame())
+    df_fluxo_bruto = r.get("df_fluxo_bruto",  pd.DataFrame())
 
     # ── Métricas resumo ───────────────────────────────────────────────────────
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1065,65 +1109,157 @@ if "resultado" in st.session_state:
 
     with tab_fin:
         st.subheader("Visão Financeira")
-        if vis_orc.empty and vis_cx.empty:
+        if df_fin_bruto.empty and df_fluxo_bruto.empty:
             st.info("Nenhum dado financeiro disponível.")
         else:
+            # ── Filtros globais ───────────────────────────────────────────────
+            _ano_atual = str(pd.Timestamp.now().year)
+
+            # Coletar anos disponíveis em ambas as visões
+            _anos_orc = (
+                df_fin_bruto["mes_pedido"]
+                .dropna()
+                .str[:4]
+                .unique()
+                .tolist()
+                if not df_fin_bruto.empty and "mes_pedido" in df_fin_bruto.columns
+                else []
+            )
+            _anos_cx = (
+                df_fluxo_bruto["mes_pagamento"]
+                .dropna()
+                .str[:4]
+                .unique()
+                .tolist()
+                if not df_fluxo_bruto.empty and "mes_pagamento" in df_fluxo_bruto.columns
+                else []
+            )
+            _anos_disp = sorted(set(_anos_orc + _anos_cx))
+            _default_ano = _ano_atual if _ano_atual in _anos_disp else (_anos_disp[0] if _anos_disp else _ano_atual)
+
+            _deptos_disp = sorted(
+                df_fin_bruto["departamento"].dropna().unique().tolist()
+                if not df_fin_bruto.empty and "departamento" in df_fin_bruto.columns
+                else []
+            )
+            _progs_disp  = sorted(
+                df_fin_bruto["programa_orcamentario"].dropna().unique().tolist()
+                if not df_fin_bruto.empty and "programa_orcamentario" in df_fin_bruto.columns
+                else []
+            )
+
+            _fc1, _fc2, _fc3 = st.columns(3)
+            with _fc1:
+                _sel_ano   = st.selectbox("Ano", _anos_disp,
+                                          index=_anos_disp.index(_default_ano) if _default_ano in _anos_disp else 0,
+                                          key="fin_ano")
+            with _fc2:
+                _sel_depto = st.selectbox("Departamento", ["Todos"] + _deptos_disp, key="fin_depto")
+            with _fc3:
+                _sel_prog  = st.selectbox("Programa Orçamentário", ["Todos"] + _progs_disp, key="fin_prog")
+
+            # ── Filtrar brutos ────────────────────────────────────────────────
+            def _filtrar_fin(df: pd.DataFrame, col_mes: str) -> pd.DataFrame:
+                if df.empty:
+                    return df
+                out = df[df[col_mes].str[:4] == _sel_ano].copy() if col_mes in df.columns else df.copy()
+                if _sel_depto != "Todos" and "departamento" in out.columns:
+                    out = out[out["departamento"] == _sel_depto]
+                if _sel_prog  != "Todos" and "programa_orcamentario" in out.columns:
+                    out = out[out["programa_orcamentario"] == _sel_prog]
+                return out
+
+            _fin_f   = _filtrar_fin(df_fin_bruto,   "mes_pedido")
+            _fluxo_f = _filtrar_fin(df_fluxo_bruto, "mes_pagamento")
+
+            # ── Reconstruir pivots dinâmicos ──────────────────────────────────
+            def _pivot_com_total(df: pd.DataFrame, idx: str, col_val: str) -> pd.DataFrame:
+                if df.empty or idx not in df.columns or "origem" not in df.columns:
+                    return pd.DataFrame()
+                pv = (
+                    df.groupby([idx, "origem"], as_index=False)[col_val]
+                    .sum()
+                    .pivot(index=idx, columns="origem", values=col_val)
+                    .fillna(0)
+                    .sort_index()
+                )
+                pv.columns.name = None
+                pv["Total"] = pv.sum(axis=1)
+                total_row = pv.sum(numeric_only=True)
+                total_row.name = "TOTAL GERAL"
+                pv = pd.concat([pv, total_row.to_frame().T])
+                return pv
+
+            _vis_orc_f = _pivot_com_total(_fin_f,   "mes_pedido",    "valor_rateado")
+            _vis_cx_f  = _pivot_com_total(_fluxo_f, "mes_pagamento", "valor_rateado")
+
             subtab_orc, subtab_cx = st.tabs([
                 "📊 Visão Orçamentária (Emissão)",
                 "💸 Visão de Caixa (Desembolso Real)",
             ])
 
             with subtab_orc:
-                st.caption("Compromisso financeiro agrupado por mês de emissão do pedido")
-                if vis_orc.empty:
-                    st.info("Sem dados orçamentários.")
+                st.caption(
+                    f"Compromisso financeiro · {_sel_ano} · "
+                    + (f"Departamento: {_sel_depto} · " if _sel_depto != "Todos" else "")
+                    + (f"Programa: {_sel_prog}" if _sel_prog != "Todos" else "Todos os departamentos/programas")
+                )
+                if _vis_orc_f.empty:
+                    st.info("Sem dados orçamentários para os filtros selecionados.")
                 else:
-                    _chart_financeiro(vis_orc, "Compromisso por Mês de Emissão")
-                    agg_fmt = vis_orc.copy()
-                    for col in agg_fmt.columns:
-                        agg_fmt[col] = agg_fmt[col].apply(_fmt_brl_contabil)
+                    # Gráfico usa dados sem a linha TOTAL
+                    _chart_financeiro(_vis_orc_f.drop("TOTAL GERAL", errors="ignore"), "Compromisso por Mês de Emissão")
+                    agg_fmt = _vis_orc_f.copy()
+                    for _c in agg_fmt.columns:
+                        agg_fmt[_c] = agg_fmt[_c].apply(_fmt_brl_contabil)
                     st.dataframe(agg_fmt, use_container_width=True)
 
             with subtab_cx:
                 st.caption(
-                    "Desembolso previsto agrupado por mês de pagamento · "
-                    "política padrão: 50% em 60 dias + 50% em 90 dias após recebimento"
+                    f"Desembolso previsto · {_sel_ano} · política padrão: 50% em 60 dias + 50% em 90 dias · "
+                    + (f"Departamento: {_sel_depto} · " if _sel_depto != "Todos" else "")
+                    + (f"Programa: {_sel_prog}" if _sel_prog != "Todos" else "Todos os departamentos/programas")
                 )
-                if vis_cx.empty:
-                    st.info("Nenhuma parcela de pagamento calculada.")
+                if _vis_cx_f.empty:
+                    st.info("Nenhuma parcela de pagamento para os filtros selecionados.")
                 else:
-                    _chart_financeiro(vis_cx, "Desembolso por Mês de Pagamento")
-                    agg_cx_fmt = vis_cx.copy()
-                    for col in agg_cx_fmt.columns:
-                        agg_cx_fmt[col] = agg_cx_fmt[col].apply(_fmt_brl_contabil)
+                    _chart_financeiro(_vis_cx_f.drop("TOTAL GERAL", errors="ignore"), "Desembolso por Mês de Pagamento")
+                    agg_cx_fmt = _vis_cx_f.copy()
+                    for _c in agg_cx_fmt.columns:
+                        agg_cx_fmt[_c] = agg_cx_fmt[_c].apply(_fmt_brl_contabil)
                     st.dataframe(agg_cx_fmt, use_container_width=True)
 
                     # ── Rastreio: Emissão → Entrega → Pagamento ───────────────
                     with st.expander("🔍 Rastreio: Emissão → Entrega → Pagamento"):
                         st.caption(
-                            "Cada linha representa uma parcela de pagamento. "
-                            "Pagamentos em 2026/2027 podem ter origem em pedidos emitidos em anos anteriores "
-                            "— rastreie pela coluna **Mês Emissão** (quando o PO foi criado) "
+                            "Cada linha representa uma parcela de pagamento rateada. "
+                            "Rastreie pela coluna **Mês Emissão** (quando o PO foi criado) "
                             "e **Mês Entrega** (quando o material chega ao estoque)."
                         )
-                        if not detalhe_fluxo.empty:
+                        if not _fluxo_f.empty:
+                            _trace_cols = [c for c in [
+                                "origem", "material", "departamento", "programa_orcamentario",
+                                "mes_emissao", "mes_entrega", "prazo_dias", "mes_pagamento", "valor_rateado",
+                            ] if c in _fluxo_f.columns]
                             df_trace = (
-                                detalhe_fluxo
+                                _fluxo_f[_trace_cols]
                                 .rename(columns={
-                                    "origem"       : "Origem",
-                                    "material"     : "Material",
-                                    "mes_emissao"  : "Mês Emissão",
-                                    "mes_entrega"  : "Mês Entrega",
-                                    "prazo_dias"   : "Prazo (dias)",
-                                    "mes_pagamento": "Mês Pagamento",
-                                    "valor_parcela": "Valor Parcela",
+                                    "origem"                : "Origem",
+                                    "material"              : "Material",
+                                    "departamento"          : "Departamento",
+                                    "programa_orcamentario" : "Programa",
+                                    "mes_emissao"           : "Mês Emissão",
+                                    "mes_entrega"           : "Mês Entrega",
+                                    "prazo_dias"            : "Prazo (dias)",
+                                    "mes_pagamento"         : "Mês Pagamento",
+                                    "valor_rateado"         : "Valor Rateado",
                                 })
                                 .sort_values(["Mês Pagamento", "Mês Entrega"])
                                 .reset_index(drop=True)
                             )
                             st.dataframe(
                                 df_trace.style.format(
-                                    {"Valor Parcela": _fmt_brl_contabil}, na_rep="-"
+                                    {"Valor Rateado": _fmt_brl_contabil}, na_rep="-"
                                 ),
                                 use_container_width=True,
                                 height=400,
