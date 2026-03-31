@@ -1109,6 +1109,76 @@ if "resultado" in st.session_state:
 
     with tab_fin:
         st.subheader("Visão Financeira")
+
+        # ── Raio-X de Auditoria (sempre visível, antes dos filtros) ──────────
+        with st.expander("🕵️ Raio-X de Auditoria Financeira (Buscando Divergências)", expanded=False):
+
+            # ── Totais brutos absolutos (sem filtro algum) ────────────────────
+            _rx_hist  = df_mb51["valor_pedido"].sum()       if not df_mb51.empty        and "valor_pedido"       in df_mb51.columns        else 0.0
+            _rx_exist = df_abertos_fut["valor_total_pedido"].sum() if not df_abertos_fut.empty and "valor_total_pedido" in df_abertos_fut.columns else 0.0
+            _rx_novo  = df_ped["valor_total_pedido"].sum()  if not df_ped.empty         and "valor_total_pedido" in df_ped.columns          else 0.0
+
+            _rx1, _rx2, _rx3 = st.columns(3)
+            _rx1.metric("📦 Histórico recebido (MB51)",      _fmt_brl_contabil(_rx_hist))
+            _rx2.metric("🔄 Pedidos existentes (SAP)",       _fmt_brl_contabil(_rx_exist))
+            _rx3.metric("🛒 Novos pedidos MRP",              _fmt_brl_contabil(_rx_novo))
+
+            st.caption(
+                f"Linhas em memória — "
+                f"MB51: **{len(df_mb51):,}** · "
+                f"Pedidos SAP: **{len(df_abertos_fut):,}** · "
+                f"Pedidos MRP: **{len(df_ped):,}** "
+                f"(compare com a contagem de linhas dos seus arquivos CSV)"
+            )
+
+            st.divider()
+
+            # ── Caça ao Preço Zero ────────────────────────────────────────────
+            _preco_zero: list[pd.DataFrame] = []
+
+            if not df_ped.empty:
+                _mask_ped = (df_ped["quantidade"] > 0) & (
+                    (df_ped.get("valor_unitario",    pd.Series(dtype=float)).fillna(0) == 0) |
+                    (df_ped.get("valor_total_pedido", pd.Series(dtype=float)).fillna(0) == 0)
+                )
+                _pz_ped = df_ped.loc[_mask_ped, ["material"]].copy()
+                _pz_ped["quantidade"]   = df_ped.loc[_mask_ped, "quantidade"]
+                _pz_ped["origem"]       = "Novo Pedido (MRP)"
+                _preco_zero.append(_pz_ped)
+
+            if not df_abertos_fut.empty:
+                _col_val_ped = "valor_total_pedido" if "valor_total_pedido" in df_abertos_fut.columns else None
+                if _col_val_ped:
+                    _mask_ex = (df_abertos_fut["quantidade"] > 0) & (
+                        df_abertos_fut[_col_val_ped].fillna(0) == 0
+                    )
+                    _pz_ex = df_abertos_fut.loc[_mask_ex, ["material"]].copy()
+                    _pz_ex["quantidade"] = df_abertos_fut.loc[_mask_ex, "quantidade"]
+                    _pz_ex["origem"]     = "Pedido Existente (SAP)"
+                    _preco_zero.append(_pz_ex)
+
+            if _preco_zero:
+                _df_pz = (
+                    pd.concat(_preco_zero, ignore_index=True)
+                    .groupby(["material", "origem"], as_index=False)["quantidade"]
+                    .sum()
+                    .sort_values("quantidade", ascending=False)
+                    .head(50)
+                    .reset_index(drop=True)
+                )
+            else:
+                _df_pz = pd.DataFrame()
+
+            if not _df_pz.empty:
+                st.warning(
+                    "⚠️ Atenção: Os materiais abaixo possuem quantidade a receber/comprar, "
+                    "mas o valor financeiro está R$ 0,00 "
+                    "(Falta preço no cadastro ou contrato)."
+                )
+                st.dataframe(_df_pz, use_container_width=True)
+            else:
+                st.success("✅ Nenhum item com quantidade > 0 e preço zerado encontrado.")
+
         if df_fin_bruto.empty and df_fluxo_bruto.empty:
             st.info("Nenhum dado financeiro disponível.")
         else:
