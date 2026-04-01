@@ -361,9 +361,14 @@ if _disparar:
                 columns=["material", "descricao", "valor_unitario"]
             )
 
-            # ── Contratos SAP ─────────────────────────────────────────────────
+            # ── Contratos SAP (opcional) ──────────────────────────────────────
             cont_path = achar_arquivo("Contratos_SAP") or achar_arquivo("contratos_sap.csv")
-            contratos = ler_contratos_sap(cont_path) if cont_path else pd.DataFrame()
+            contratos = pd.DataFrame()
+            if cont_path:
+                try:
+                    contratos = ler_contratos_sap(cont_path)
+                except Exception as _e_cont:
+                    print(f"  ⚠ Contratos SAP não carregado ({_e_cont}) — sem verificação de saldo.")
 
             # ── Lead Times ────────────────────────────────────────────────────
             # Prioridade: 1) coluna LT em materiais.csv  2) arquivo LT (case-insensitive)
