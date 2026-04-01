@@ -189,15 +189,23 @@ def _ler_sap_tabsep(source) -> pd.DataFrame:
         for _row_idx in range(min(6, len(best))):
             _row_vals = best.iloc[_row_idx].dropna().tolist()
             if len(_row_vals) >= 3:                      # linha com conteúdo suficiente
-                best.columns = best.iloc[_row_idx]
+                # Converte NaN (float) para string vazia para evitar AttributeError
+                best.columns = [
+                    str(v).strip() if pd.notna(v) else ""
+                    for v in best.iloc[_row_idx]
+                ]
                 best = best.iloc[_row_idx + 1:].reset_index(drop=True)
                 break
 
-    # Normalizar nomes de colunas: remover quebras de linha e espaços extras
+    # Normalizar nomes de colunas: garantir strings (sem NaN), remover quebras e espaços
+    best.columns = pd.Index([
+        str(c) if pd.notna(c) else ""
+        for c in best.columns
+    ])
     best.columns = (
         best.columns
-        .str.replace(r"[\r\n]+", " ", regex=True)   # \n → espaço
-        .str.replace(r" {2,}", " ", regex=True)      # múltiplos espaços → um
+        .str.replace(r"[\r\n]+", " ", regex=True)
+        .str.replace(r" {2,}", " ", regex=True)
         .str.strip()
     )
     return best
