@@ -306,6 +306,10 @@ with st.sidebar:
     if _tem_dados_minimos():
         st.caption("Dados disponíveis — processamento automático ativo.")
 
+    if st.button("🔄 Forçar Recarregamento (Limpar Cache)", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
     st.divider()
     st.caption("**Fluxo:** Arquivos SAP → Normalização → Motor MRP → Dashboard + Excel")
 
