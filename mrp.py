@@ -90,6 +90,32 @@ def salvar(df: pd.DataFrame, nome: str) -> None:
     print(f"  ✓ Salvo → {caminho}  ({len(df)} linhas)")
 
 
+def achar_arquivo(nome: str, pasta: str = DIR_DADOS) -> str | None:
+    """Localiza arquivo em `pasta` de forma case-insensitive.
+
+    1. Tenta o caminho exato primeiro (rápido, preserva comportamento padrão).
+    2. Se não encontrar, varre o diretório ignorando maiúsculas/minúsculas.
+       Aceita também variação de extensão (.csv / sem extensão).
+
+    Retorna o caminho completo resolvido ou None se não encontrado.
+    """
+    exact = os.path.join(pasta, nome)
+    if os.path.exists(exact):
+        return exact
+
+    nome_lower = nome.lower()
+    try:
+        for entry in os.listdir(pasta):
+            if entry.lower() == nome_lower:
+                return os.path.join(pasta, entry)
+            # Tenta também com/sem extensão .csv
+            if entry.lower().rstrip(".csv") == nome_lower.rstrip(".csv"):
+                return os.path.join(pasta, entry)
+    except FileNotFoundError:
+        pass
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PARSERS SAP — FUNÇÕES NOVAS (adição pura; não alteram nenhum passo existente)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,6 +181,18 @@ def _ler_sap_tabsep(source) -> pd.DataFrame:
 
     if best is None or best.empty:
         raise ValueError("Não foi possível ler o arquivo SAP.")
+
+    # ── Corrigir header deslocado: quando linha 0 está em branco, o pandas
+    # produz "Unnamed: 0..N". Detectamos isso e promovemos a primeira linha
+    # não-nula como cabeçalho real (comportamento comum em exports SAP/Excel).
+    if all(str(c).startswith("Unnamed:") for c in best.columns):
+        for _row_idx in range(min(6, len(best))):
+            _row_vals = best.iloc[_row_idx].dropna().tolist()
+            if len(_row_vals) >= 3:                      # linha com conteúdo suficiente
+                best.columns = best.iloc[_row_idx]
+                best = best.iloc[_row_idx + 1:].reset_index(drop=True)
+                break
+
     # Normalizar nomes de colunas: remover quebras de linha e espaços extras
     best.columns = (
         best.columns
@@ -1069,18 +1107,16 @@ def passo_1_2_demanda() -> pd.DataFrame:
     separador("PASSO 1-2 │ LER E CONSOLIDAR DEMANDA")
 
     # [FIX 1] Fonte única de demanda: formato DTM obrigatório.
-    # Bifurcação silenciosa para demanda.csv legado foi removida — o sistema
-    # falha explicitamente se o arquivo configurado não existir.
     if not ARQUIVO_DEMANDA_RAW:
         raise ValueError(
             "ARQUIVO_DEMANDA_RAW não configurado em mrp.py. "
             "Defina o nome do arquivo de demanda no formato DTM."
         )
-    caminho = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW)
-    if not os.path.exists(caminho):
+    caminho = achar_arquivo(ARQUIVO_DEMANDA_RAW)
+    if not caminho:
         raise FileNotFoundError(
-            f"Arquivo de demanda não encontrado: {caminho}\n"
-            f"Coloque o arquivo DTM em '{DIR_DADOS}/' ou ajuste ARQUIVO_DEMANDA_RAW."
+            f"Arquivo de demanda não encontrado: '{ARQUIVO_DEMANDA_RAW}' (nem variações de capitalização) em '{DIR_DADOS}/'.\n"
+            f"Arquivos presentes: {os.listdir(DIR_DADOS) if os.path.isdir(DIR_DADOS) else '(pasta ausente)'}"
         )
 
     df_raw = transformar_demanda_dtm(caminho)
@@ -1111,21 +1147,21 @@ def passo_1_2_demanda() -> pd.DataFrame:
 def passo_3_estoque() -> pd.DataFrame:
     separador("PASSO 3 │ CONSOLIDAR ESTOQUE (IGNORAR ENDEREÇAMENTO)")
 
-    # [FIX 5] Fail-fast: SAP tab-sep tem prioridade; fallback legado só se
-    # estoque_sap.csv ausente. Falha explícita se nenhum arquivo existir.
-    sap_path    = os.path.join(DIR_DADOS, ARQ_ESTOQUE_SAP)
-    legado_path = os.path.join(DIR_DADOS, "estoque.csv")
+    # [FIX 5] Fail-fast: SAP tab-sep tem prioridade; fallback legado só se ausente.
+    sap_path    = achar_arquivo(ARQ_ESTOQUE_SAP)
+    legado_path = achar_arquivo("estoque.csv")
 
-    if os.path.exists(sap_path):
+    if sap_path:
         consolidado = ler_estoque_sap(sap_path)
         salvar(consolidado, "01_estoque_consolidado.csv")
         return consolidado
 
-    if not os.path.exists(legado_path):
+    if not legado_path:
         raise FileNotFoundError(
-            f"Nenhum arquivo de estoque encontrado.\n"
-            f"  Esperado (SAP):   {sap_path}\n"
-            f"  Esperado (legado):{legado_path}"
+            f"Nenhum arquivo de estoque encontrado em '{DIR_DADOS}/'.\n"
+            f"  Esperado (SAP):   {ARQ_ESTOQUE_SAP} (ou variação de capitalização)\n"
+            f"  Esperado (legado): estoque.csv\n"
+            f"  Arquivos presentes: {os.listdir(DIR_DADOS) if os.path.isdir(DIR_DADOS) else '(pasta ausente)'}"
         )
 
     df = pd.read_csv(legado_path, encoding="latin-1", sep=",")
@@ -1221,11 +1257,11 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     separador("PASSO 4 │ PEDIDOS EM ABERTO — ENTRADAS FUTURAS")
 
-    ped_path = os.path.join(DIR_DADOS, "pedidos_abertos.csv")
-    sap_path = os.path.join(DIR_DADOS, ARQ_REMESSAS_SAP)
+    ped_path = achar_arquivo("pedidos_abertos.csv") or achar_arquivo("PEDIDOS_ABERTOS.csv")
+    sap_path = achar_arquivo(ARQ_REMESSAS_SAP)
 
-    tem_ped = os.path.exists(ped_path)
-    tem_sap = os.path.exists(sap_path)
+    tem_ped = bool(ped_path)
+    tem_sap = bool(sap_path)
 
     if not tem_ped and not tem_sap:
         print("  ⚠ Nenhuma fonte de pedidos encontrada.")
@@ -2098,11 +2134,12 @@ def main() -> None:
     os.makedirs(DIR_SAIDA, exist_ok=True)
 
     # ── Carregar arquivos auxiliares (SAP novos + legado) ─────────────────────
-    materiais = ler_materiais(os.path.join(DIR_DADOS, "materiais.csv"))
+    mat_path = achar_arquivo("materiais.csv")
+    materiais = ler_materiais(mat_path) if mat_path else pd.DataFrame()
 
     # Contratos SAP (opcional — enriquece preços para ABC)
-    contratos_path = os.path.join(DIR_DADOS, ARQ_CONTRATOS_SAP)
-    contratos = ler_contratos_sap(contratos_path) if os.path.exists(contratos_path) else pd.DataFrame()
+    contratos_path = achar_arquivo(ARQ_CONTRATOS_SAP)
+    contratos = ler_contratos_sap(contratos_path) if contratos_path else pd.DataFrame()
 
     # Lead times por material: coluna LEAD_TIME do materiais.csv (prioritário)
     # Fallback: lead_times.csv separado; ausentes usam LEAD_TIME_DIAS
@@ -2113,8 +2150,8 @@ def main() -> None:
             if pd.notna(row["lead_time_dias"])
         }
     else:
-        lt_path = os.path.join(DIR_DADOS, ARQ_LEAD_TIMES)
-        lt_dict = ler_lead_times(lt_path) if os.path.exists(lt_path) else {}
+        lt_path = achar_arquivo(ARQ_LEAD_TIMES)
+        lt_dict = ler_lead_times(lt_path) if lt_path else {}
 
     # ── Pipeline principal ────────────────────────────────────────────────────
     demanda                   = passo_1_2_demanda()

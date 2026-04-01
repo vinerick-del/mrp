@@ -40,6 +40,7 @@ from mrp import (
     ARQUIVO_DEMANDA_RAW,
     DIR_DADOS,
     DIR_SAIDA,
+    achar_arquivo,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -78,7 +79,11 @@ _ARQUIVOS_MAPA = {
 
 
 def _path_arquivo(chave: str) -> str:
-    return os.path.join(DIR_DADOS, _ARQUIVOS_MAPA[chave])
+    """Resolve caminho case-insensitive: usa achar_arquivo para tolerar
+    variações de capitalização (Demanda.csv, REMESSAS_SAP.csv, etc.)."""
+    nome    = _ARQUIVOS_MAPA[chave]
+    resolvido = achar_arquivo(nome)
+    return resolvido if resolvido else os.path.join(DIR_DADOS, nome)
 
 
 def _info_arquivo(chave: str) -> str | None:
@@ -357,11 +362,11 @@ if _disparar:
             )
 
             # ── Contratos SAP ─────────────────────────────────────────────────
-            cont_path = os.path.join(DIR_DADOS, "contratos_sap.csv")
-            contratos = ler_contratos_sap(cont_path) if os.path.exists(cont_path) else pd.DataFrame()
+            cont_path = achar_arquivo("Contratos_SAP") or achar_arquivo("contratos_sap.csv")
+            contratos = ler_contratos_sap(cont_path) if cont_path else pd.DataFrame()
 
             # ── Lead Times ────────────────────────────────────────────────────
-            # Prioridade: 1) coluna LT em materiais.csv  2) LEAD_TIMES.csv  3) lead_times.csv
+            # Prioridade: 1) coluna LT em materiais.csv  2) arquivo LT (case-insensitive)
             if "lead_time_dias" in materiais.columns:
                 lt_dict = {
                     str(row["material"]): int(row["lead_time_dias"])
@@ -370,13 +375,7 @@ if _disparar:
                 }
                 print(f"  [LT] Lead times de materiais.csv: {len(lt_dict)} itens")
             else:
-                # Aceita qualquer capitalização do nome do arquivo
-                _lt_candidatos = ["LEAD_TIMES.csv", "lead_times.csv", "Lead_Times.csv"]
-                lt_path = next(
-                    (os.path.join(DIR_DADOS, f) for f in _lt_candidatos
-                     if os.path.exists(os.path.join(DIR_DADOS, f))),
-                    None,
-                )
+                lt_path = achar_arquivo("LEAD_TIMES.csv") or achar_arquivo("lead_times.csv")
                 lt_dict = ler_lead_times(lt_path) if lt_path else {}
                 if not lt_dict:
                     print(f"  [LT] ⚠ Nenhum lead time carregado — usando default {LEAD_TIME_DIAS}d para todos")
@@ -405,14 +404,14 @@ if _disparar:
             _demanda_detail_df = demanda_detail if demanda_detail is not None else pd.DataFrame()
 
             # ── Histórico MB51 (opcional) ─────────────────────────────────────
-            mb51_path = os.path.join(DIR_DADOS, "historico_mb51.csv")
-            df_mb51 = ler_historico_mb51(mb51_path) if os.path.exists(mb51_path) else pd.DataFrame()
+            mb51_path = achar_arquivo("historico_mb51.csv")
+            df_mb51 = ler_historico_mb51(mb51_path) if mb51_path else pd.DataFrame()
 
             # ── Política de Pagamento (opcional) ─────────────────────────────
-            politica_path = os.path.join(DIR_DADOS, "politica_pagamento.csv")
+            politica_path = achar_arquivo("politica_pagamento.csv") or achar_arquivo("Politica_de_pagamento")
             politica_pag_carregada: dict[str, list[int]] = (
                 ler_politica_pagamento(politica_path)
-                if os.path.exists(politica_path) else {}
+                if politica_path else {}
             )
 
             # Alertas
