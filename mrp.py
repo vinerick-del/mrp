@@ -27,6 +27,57 @@ import numpy as np
 import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUDITORIA DE REJEIÇÕES
+# ─────────────────────────────────────────────────────────────────────────────
+class AuditTrail:
+    """Registra linhas rejeitadas com motivo durante importação."""
+    def __init__(self):
+        self.rejections = {
+            "demanda": [],
+            "estoque": [],
+            "pedidos": [],
+            "materiais": [],
+            "lead_times": [],
+            "mb51": [],
+            "contratos": [],
+        }
+
+    def reject(self, source: str, row_idx: int, row_data: dict, reason: str) -> None:
+        """Registra rejeição de uma linha."""
+        if source not in self.rejections:
+            self.rejections[source] = []
+        self.rejections[source].append({
+            "idx": row_idx,
+            "reason": reason,
+            **row_data
+        })
+
+    def save_all(self, audit_dir: str = None) -> dict:
+        """Salva relatórios de rejeição em CSVs. Retorna resumo."""
+        if audit_dir is None:
+            audit_dir = os.path.join(DIR_SAIDA, "audit")
+        os.makedirs(audit_dir, exist_ok=True)
+        summary = {}
+        for source, rows in self.rejections.items():
+            if rows:
+                df = pd.DataFrame(rows)
+                path = os.path.join(audit_dir, f"rejected_{source}.csv")
+                df.to_csv(path, index=False)
+                summary[source] = len(rows)
+        return summary
+
+    def print_summary(self) -> None:
+        """Exibe resumo de rejeições."""
+        total = sum(len(v) for v in self.rejections.values())
+        if total > 0:
+            print(f"\n  ⚠ AUDITORIA: {total} linha(s) rejeitada(s)")
+            for source, rows in self.rejections.items():
+                if rows:
+                    print(f"    • {source}: {len(rows)} linhas")
+
+audit = AuditTrail()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURAÇÕES
 # ─────────────────────────────────────────────────────────────────────────────
 MESES_COBERTURA_SS     = 3   # Cobertura do estoque de segurança (A/B) — rolling
@@ -457,7 +508,15 @@ def ler_estoque_sap(source) -> pd.DataFrame:
     # Manter apenas linhas onde material é numérico ou tem no máx. 10 caracteres
     # sem o padrão de sufixo SAP (letras depois de números).
     df["material"] = df["material"].str.strip()
-    df = df[df["material"].str.match(r"^\d+$", na=False)].copy()  # só códigos numéricos limpos
+    invalido_mat = ~df["material"].str.match(r"^\d+$", na=False)
+    if invalido_mat.any():
+        for idx in df[invalido_mat].index:
+            row = df.loc[idx]
+            audit.reject("estoque", idx, {
+                "material_raw": row["material"],
+                "quantidade_raw": row["_qtd_raw"],
+            }, "material_invalido_ou_com_sufixo")
+    df = df[~invalido_mat].copy()
 
     df["quantidade"] = df["_qtd_raw"].apply(br_to_float)
 
@@ -1073,6 +1132,16 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
     if invalidas.any():
         print(f"  ⚠  Datas inválidas (coluna MÊS): {invalidas.sum()} registro(s)")
         print(df[invalidas][["material", "_mes_raw"]].to_string(index=False))
+        # Registra rejeições na auditoria
+        for idx in df[invalidas].index:
+            row = df.loc[idx]
+            audit.reject("demanda", idx, {
+                "material": row["material"],
+                "data_raw": row["_mes_raw"],
+                "departamento": row["departamento"],
+                "programa": row["programa_orcamentario"],
+                "quantidade": row["quantidade"],
+            }, "data_invalida")
         df = df[~invalidas].copy()
 
     df = df.drop(columns=["_mes_raw"])
@@ -1083,6 +1152,14 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
     nao_num = df["quantidade"].isna()
     if nao_num.any():
         print(f"  ⚠  Quantidades não numéricas: {nao_num.sum()} registro(s) → convertidos para 0")
+        # Registra rejeições
+        for idx in df[nao_num].index:
+            row = df.loc[idx]
+            audit.reject("demanda", idx, {
+                "material": row["material"],
+                "mes": row["mes"],
+                "quantidade_raw": row["quantidade"],
+            }, "quantidade_invalida")
     df["quantidade"] = df["quantidade"].fillna(0)
 
     negativos = df["quantidade"] < 0
@@ -1802,6 +1879,9 @@ def passos_6_11_mrp(
     salvar(df_mrp, "03_mrp_projetado.csv")
     salvar(df_ped, "04_pedidos_compra.csv")
 
+    # ── Relatório final de rejeições ─────────────────────────────────────────────
+    audit.print_summary()
+
     print(f"\n  {'Material':<10} {'Classe':>6} {'Pedidos':>8} {'Qtd Total':>12}  Estratégia")
     print(f"  {'─'*10} {'─'*6} {'─'*8} {'─'*12}  {'─'*30}")
     for mat in todos_mats:
@@ -2225,9 +2305,16 @@ def main() -> None:
         for depto, qtd in por_depto.items():
             print(f"    {depto:<20} : {qtd:>10,.1f} un.")
 
-    print(f"\n  Arquivos gerados em ./{DIR_SAIDA}/")
+    # ── Salvar relatório de auditoria ────────────────────────────────────────────
+    resumo_audit = audit.save_all()
+    if resumo_audit:
+        print(f"\n  📋 AUDITORIA — Linhas rejeitadas (salvo em ./{DIR_AUDIT}/)")
+        for source, count in sorted(resumo_audit.items()):
+            print(f"    ✓ rejected_{source}.csv  ({count} linhas)")
+
+    print(f"\n  📊 Arquivos de saída em ./{DIR_SAIDA}/")
     for arq in sorted(os.listdir(DIR_SAIDA)):
-        if arq.endswith(".csv"):
+        if arq.endswith(".csv") and not arq.startswith("rejected"):
             print(f"    ✓ {arq}")
 
     print(f"\n{'═' * W}\n")
