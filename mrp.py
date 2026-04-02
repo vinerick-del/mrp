@@ -175,15 +175,23 @@ def br_to_float(s) -> float:
     """Converte número no formato brasileiro para float.
 
     Suporta:
-      '3.515,50'   → 3515.50
-      '-3.515,50'  → -3515.50
-      '3.515,50-'  → -3515.50  (sinal à direita, padrão SAP)
-      '3.515,50+'  → 3515.50   (sinal à direita positivo)
+      '3.515,50'     → 3515.50
+      '-3.515,50'    → -3515.50
+      '3.515,50-'    → -3515.50  (sinal à direita, padrão SAP)
+      '3.515,50+'    → 3515.50   (sinal à direita positivo)
+      'R$ 3.515,50'  → 3515.50   (prefixo de moeda)
+      'R$3.515,50-'  → -3515.50  (moeda + sinal SAP)
     """
     if s is None:
         return 0.0
     s = str(s).strip()
     if s in ("", "-", "+", "nan", "NaN"):
+        return 0.0
+
+    # Remove prefixo de moeda (R$, US$, EUR, $, etc.) e espaços residuais
+    import re as _re
+    s = _re.sub(r'^[A-Za-z$€£¥R\u00a0\s]+', '', s).strip()
+    if not s:
         return 0.0
 
     # Sinal à direita (formato SAP: '1.234,56-')
@@ -931,8 +939,27 @@ def ler_politica_pagamento(source) -> dict:
         # Usa a primeira coluna
         col_doc = df.columns[0]
 
-    # Colunas de dias: todas as numéricas restantes
-    cols_dias = [c for c in df.columns if c != col_doc]
+    # Colunas de dias de pagamento
+    # Prioridade 1: colunas com prefixo explícito de parcela/pagamento
+    _PREFIXOS_DIA = ("pagamento", "payment", "dias_", "dia_", "prazo_",
+                     "parcela_", "pgt_", "venc_", "parc_")
+    # Colunas que NÃO são dias mesmo sendo numéricas
+    _EXCLUIR_NOMES = {
+        "qtd_parcelas", "qtd_parc", "num_parcelas", "total_parcelas",
+        "nr_parcelas", "nr_parc", "qt_parcelas",
+        "concatenar", "concat", "descricao", "observacao", "obs", "texto",
+    }
+
+    cols_dias = [
+        c for c in df.columns
+        if c != col_doc and any(c.startswith(p) for p in _PREFIXOS_DIA)
+    ]
+    if not cols_dias:
+        # Fallback: todas as colunas exceto doc e metadados conhecidos
+        cols_dias = [
+            c for c in df.columns
+            if c != col_doc and c not in _EXCLUIR_NOMES
+        ]
 
     politica: dict[str, list[int]] = {}
     for _, row in df.iterrows():
@@ -944,7 +971,7 @@ def ler_politica_pagamento(source) -> dict:
             v = row[c]
             try:
                 d = int(float(str(v).replace(",", ".")))
-                if d > 0:
+                if 1 <= d <= 1095:  # entre 1 dia e 3 anos — filtra lixo numérico
                     dias.append(d)
             except (ValueError, TypeError):
                 pass
