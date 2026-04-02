@@ -1,0 +1,4 @@
+idx,reason,material,data_raw,departamento,programa,quantidade,mes,quantidade_raw
+1,data_invalida,10001,99/99/9999,DPC,A40_INSPECAO,5,,
+2,quantidade_invalida,10001,,,,,2026-02,
+4,quantidade_invalida,10005,,,,,2026-02,
