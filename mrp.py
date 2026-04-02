@@ -48,8 +48,8 @@ LIMITE_ABC_B = 0.95          # Classe B → 80% a 95%
 #             (pedido maior → menos pedidos ao longo do ano)
 CLASSE_C_COBERTURA_MESES = 4   # Meses cobertos por pedido Classe C
 
-DIR_DADOS = "data"
-DIR_SAIDA = "output"
+DIR_DADOS = os.environ.get("MRP_DIR_DADOS", "data")
+DIR_SAIDA = os.environ.get("MRP_DIR_SAIDA", "output")
 
 # Arquivo de demanda bruta no formato DTM (dd/mm/yyyy).
 # Quando definido e o arquivo existir, substitui demanda.csv como fonte de demanda.
@@ -844,7 +844,16 @@ def ler_politica_pagamento(source) -> dict:
         # tenta detectar separador
         raw = source.read() if hasattr(source, "read") else open(source, "rb").read()
         texto = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-        sep = ";" if texto.count(";") >= texto.count(",") else ","
+        # Detecta separador: TAB > ; > ,
+        c_tab  = texto.count("\t")
+        c_semi = texto.count(";")
+        c_comm = texto.count(",")
+        if c_tab >= max(c_semi, c_comm) and c_tab > 0:
+            sep = "\t"
+        elif c_semi >= c_comm:
+            sep = ";"
+        else:
+            sep = ","
         import io
         df = pd.read_csv(io.StringIO(texto), sep=sep, dtype=str)
     except Exception as exc:
@@ -1831,7 +1840,8 @@ def passo_12_rateio(
 
     rb_path = os.path.join(DIR_DADOS, "rateio_base.csv")
     if os.path.exists(rb_path):
-        rateio_base = pd.read_csv(rb_path)
+        rateio_base = pd.read_csv(rb_path, dtype={"material": str})
+        rateio_base["material"] = rateio_base["material"].astype(str).str.strip()
         print(f"  Fonte rateio         : rateio_base.csv ({len(rateio_base)} linhas)")
     elif demanda_detail is not None and not demanda_detail.empty:
         rateio_base = derivar_rateio_da_demanda(demanda_detail)
