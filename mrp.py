@@ -939,27 +939,8 @@ def ler_politica_pagamento(source) -> dict:
         # Usa a primeira coluna
         col_doc = df.columns[0]
 
-    # Colunas de dias de pagamento
-    # Prioridade 1: colunas com prefixo explícito de parcela/pagamento
-    _PREFIXOS_DIA = ("pagamento", "payment", "dias_", "dia_", "prazo_",
-                     "parcela_", "pgt_", "venc_", "parc_")
-    # Colunas que NÃO são dias mesmo sendo numéricas
-    _EXCLUIR_NOMES = {
-        "qtd_parcelas", "qtd_parc", "num_parcelas", "total_parcelas",
-        "nr_parcelas", "nr_parc", "qt_parcelas",
-        "concatenar", "concat", "descricao", "observacao", "obs", "texto",
-    }
-
-    cols_dias = [
-        c for c in df.columns
-        if c != col_doc and any(c.startswith(p) for p in _PREFIXOS_DIA)
-    ]
-    if not cols_dias:
-        # Fallback: todas as colunas exceto doc e metadados conhecidos
-        cols_dias = [
-            c for c in df.columns
-            if c != col_doc and c not in _EXCLUIR_NOMES
-        ]
+    # Colunas de dias de pagamento: apenas colunas que contenham "pagamento" no nome
+    cols_dias = [c for c in df.columns if c != col_doc and "pagamento" in c.lower()]
 
     politica: dict[str, list[int]] = {}
     for _, row in df.iterrows():
