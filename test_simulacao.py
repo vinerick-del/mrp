@@ -278,7 +278,8 @@ check("10001 est_proj 2026-09 = 1", ep("10001", "2026-09"),  1)
 check("10001 sem pedido 2026-04 (LT window cobre PO)", ped_gen("10001", "2026-04"), 0)
 
 ped_10001 = df_ped[df_ped["material"] == "10001"].sort_values("periodo_necessidade")
-check("10001: nº pedidos gerados = 3", len(ped_10001), 3)
+# Após fix dupla-contagem: pedido de dez/26 eliminado (demanda 2027=0, ss_futuro=0)
+check("10001: nº pedidos gerados = 2", len(ped_10001), 2)
 if len(ped_10001) >= 1:
     check("10001: 1º necessidade em 2026-08", ped_10001.iloc[0]["periodo_necessidade"], "2026-08")
     check("10001: 1º entrega em 2026-10",     ped_10001.iloc[0]["periodo_entrega"],      "2026-10")
@@ -296,7 +297,7 @@ check("10002 est_proj 2026-06 = 8 (PO chega)", ep("10002", "2026-06"),  8)
 check("10002 sem pedido 2026-04 (LT window cobre PO)", ped_gen("10002", "2026-04"), 0)
 
 ped_10002 = df_ped[df_ped["material"] == "10002"].sort_values("periodo_necessidade")
-check("10002: nº pedidos gerados = 3", len(ped_10002), 3)
+check("10002: nº pedidos gerados = 2", len(ped_10002), 2)
 if len(ped_10002) >= 1:
     check("10002: 1º necessidade em 2026-08", ped_10002.iloc[0]["periodo_necessidade"], "2026-08")
     check("10002: 1º entrega em 2026-09",     ped_10002.iloc[0]["periodo_entrega"],      "2026-09")
@@ -314,7 +315,8 @@ check("10003: nenhum pedido antes de ago (estoque > dem)",
       all(ped_gen("10003", p) == 0 for p in ["2026-04","2026-05","2026-06","2026-07"]), True)
 
 ped_10003 = df_ped[df_ped["material"] == "10003"].sort_values("periodo_necessidade")
-check("10003: nº pedidos gerados = 2", len(ped_10003), 2)
+# Pedido de dez/26 eliminado: ss_futuro(jan-abr/27)=0 → nec=0 (sem demanda em 2027)
+check("10003: nº pedidos gerados = 1", len(ped_10003), 1)
 if len(ped_10003) >= 1:
     check("10003: 1º trigger em 2026-08", ped_10003.iloc[0]["periodo_necessidade"], "2026-08")
     check("10003: 1º entrega em 2026-09", ped_10003.iloc[0]["periodo_entrega"],      "2026-09")
@@ -329,7 +331,8 @@ print(df_mrp[df_mrp["material"] == "10004"][
 ].to_string(index=False))
 
 ped_10004 = df_ped[df_ped["material"] == "10004"].sort_values("periodo_necessidade")
-check("10004: nº pedidos gerados = 2", len(ped_10004), 2)
+# Idem 10003 — pedido dez/26 eliminado pela correção de dupla-contagem
+check("10004: nº pedidos gerados = 1", len(ped_10004), 1)
 if len(ped_10004) >= 1:
     check("10004: 1º trigger em 2026-08", ped_10004.iloc[0]["periodo_necessidade"], "2026-08")
     # LT=7d: 2026-08-01 + 7 = 2026-08-08 → mesmo mês → bump para 2026-09

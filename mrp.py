@@ -1174,20 +1174,10 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
     df = df.drop(columns=["_mes_raw"])
 
     # ── Conversão de quantidade para numérico ─────────────────────────────────
-    df["quantidade"] = pd.to_numeric(df["quantidade"], errors="coerce")
+    # Usa br_to_float para suportar formato BR ("1,5", "1.234,56") sem NaN
+    df["quantidade"] = df["quantidade"].apply(br_to_float)
 
-    nao_num = df["quantidade"].isna()
-    if nao_num.any():
-        print(f"  ⚠  Quantidades não numéricas: {nao_num.sum()} registro(s) → convertidos para 0")
-        # Registra rejeições
-        for idx in df[nao_num].index:
-            row = df.loc[idx]
-            audit.reject("demanda", idx, {
-                "material": row["material"],
-                "mes": row["mes"],
-                "quantidade_raw": row["quantidade"],
-            }, "quantidade_invalida")
-    df["quantidade"] = df["quantidade"].fillna(0)
+    # br_to_float já garante float (nunca retorna NaN); nenhum fillna necessário
 
     negativos = df["quantidade"] < 0
     if negativos.any():
@@ -1805,25 +1795,23 @@ def passos_6_11_mrp(
             if classe == "C":
                 # Trigger: cobertura < 1 mês (risco de ruptura)
                 # Ao pedir: cobrir os próximos CLASSE_C_COBERTURA_MESES meses
-                # [FIX 2] ss_display usava MESES_COBERTURA_SS (3m, regra de A/B).
-                # Classe C deve exibir e calcular cobertura com CLASSE_C_COBERTURA_MESES.
+                # [FIX] ss começa em i+1: est_proj já descontou dem[i], logo
+                # incluir dem[i] no alvo causaria dupla contagem (~+25% over-ordering).
                 ss_display = sum(
                     dem_mat.get(periodos[j], 0.0)
-                    for j in range(i, min(i + CLASSE_C_COBERTURA_MESES, n_per))
+                    for j in range(i + 1, min(i + 1 + CLASSE_C_COBERTURA_MESES, n_per))
                 )
                 if estoque_virtual < dem:
-                    ss_ordem = sum(
-                        dem_mat.get(periodos[j], 0.0)
-                        for j in range(i, min(i + CLASSE_C_COBERTURA_MESES, n_per))
-                    )
-                    nec_ideal = max(0.0, ss_ordem - estoque_virtual)
+                    ss_futuro = ss_display   # já calculado acima
+                    nec_ideal = max(0.0, ss_futuro - estoque_virtual)
                 else:
                     nec_ideal = 0.0
             else:
                 # Classes A e B: trigger quando estoque_virtual < SS de 3 meses
+                # [FIX] idem — range começa em i+1 para evitar dupla contagem
                 ss_display = sum(
                     dem_mat.get(periodos[j], 0.0)
-                    for j in range(i, min(i + MESES_COBERTURA_SS, n_per))
+                    for j in range(i + 1, min(i + 1 + MESES_COBERTURA_SS, n_per))
                 )
                 nec_ideal = max(0.0, ss_display - estoque_virtual)
 
