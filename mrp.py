@@ -1773,28 +1773,26 @@ def passos_6_11_mrp(
             )
             estoque_virtual = est_proj + entradas_em_transito
 
-            if classe == "C":
-                # Trigger: cobertura < 1 mês (risco de ruptura)
-                # Ao pedir: cobrir os próximos CLASSE_C_COBERTURA_MESES meses
-                # [FIX] ss começa em i+1: est_proj já descontou dem[i], logo
-                # incluir dem[i] no alvo causaria dupla contagem (~+25% over-ordering).
-                ss_display = sum(
-                    dem_mat.get(periodos[j], 0.0)
-                    for j in range(i + 1, min(i + 1 + CLASSE_C_COBERTURA_MESES, n_per))
-                )
-                if estoque_virtual < dem:
-                    ss_futuro = ss_display   # já calculado acima
-                    nec_ideal = max(0.0, ss_futuro - estoque_virtual)
-                else:
-                    nec_ideal = 0.0
+            # Backward scheduling: antecipar a necessidade pelo lead time.
+            # Em cada mês i, projeta a posição de cobertura no momento em que um
+            # novo pedido emitido AGORA chegaria (i + lt_meses) e verifica se a
+            # cobertura pós-chegada estará suficiente.  Isso elimina rupturas que
+            # ocorriam quando o trigger disparava apenas no mês da falta — tarde
+            # demais para que a entrega chegasse a tempo.
+            lt_meses        = math.ceil(lt / 30)
+            cobertura_meses = CLASSE_C_COBERTURA_MESES if classe == "C" else MESES_COBERTURA_SS
+            # Janela: LT meses (período até chegada) + cobertura alvo (pós-chegada)
+            dem_ate_cobertura = sum(
+                dem_mat.get(periodos[j], 0.0)
+                for j in range(i + 1, min(i + 1 + lt_meses + cobertura_meses, n_per))
+            )
+            ss_display = dem_ate_cobertura  # para relatório
+
+            # Trigger: estoque virtual não cobre a demanda até chegada + cobertura
+            if estoque_virtual < dem_ate_cobertura:
+                nec_ideal = max(0.0, dem_ate_cobertura - estoque_virtual)
             else:
-                # Classes A e B: trigger quando estoque_virtual < SS de 3 meses
-                # [FIX] idem — range começa em i+1 para evitar dupla contagem
-                ss_display = sum(
-                    dem_mat.get(periodos[j], 0.0)
-                    for j in range(i + 1, min(i + 1 + MESES_COBERTURA_SS, n_per))
-                )
-                nec_ideal = max(0.0, ss_display - estoque_virtual)
+                nec_ideal = 0.0
 
             # ── Teto Phase-Out: nunca pedir além da demanda restante conhecida ─
             # [FIX 3+4] horizonte_finito controla se o teto é aplicado.
@@ -1886,11 +1884,11 @@ def passos_6_11_mrp(
         n_ped   = len(sub)
         qtd     = int(sub["quantidade"].sum()) if not sub.empty else 0
         if cls == "C":
-            estrategia = f"Trigger 1m / Cobertura {CLASSE_C_COBERTURA_MESES}m (sem limite)"
+            estrategia = f"Backward LT+{CLASSE_C_COBERTURA_MESES}m / Cobertura {CLASSE_C_COBERTURA_MESES}m"
         elif cls == "A":
-            estrategia = f"SS {MESES_COBERTURA_SS}m / Compra frequente"
+            estrategia = f"Backward LT+{MESES_COBERTURA_SS}m / SS {MESES_COBERTURA_SS}m"
         else:
-            estrategia = f"SS {MESES_COBERTURA_SS}m / Estratégia intermediária"
+            estrategia = f"Backward LT+{MESES_COBERTURA_SS}m / SS {MESES_COBERTURA_SS}m"
         print(f"  {mat:<10} {cls:>6} {n_ped:>8} {qtd:>12,}  {estrategia}")
 
     return df_mrp, df_ped
@@ -2081,8 +2079,7 @@ def validar_classe_c(df_mrp: pd.DataFrame, material: str = "MAT007") -> None:
     classe = sub["classe"].iloc[0]
     print(f"  Material : {material}  │  Classe : {classe}")
     print(
-        f"  Estratégia: trigger quando estoque < demanda mensal; "
-        f"cobertura {CLASSE_C_COBERTURA_MESES} meses ao pedir\n"
+        f"  Estratégia: backward scheduling LT + {CLASSE_C_COBERTURA_MESES} meses cobertura\n"
     )
 
     hdr = f"  {'Período':<10} {'Demanda':>8} {'Entradas':>9} {'Est.Proj':>9} {'SS 3m':>7} {'Pedido':>8}  Situação"
@@ -2221,8 +2218,8 @@ def main() -> None:
     cabecalho("SISTEMA MRP COM ENDEREÇAMENTO DE ESTOQUE")
     print(f"  Data de execução  : {date.today().strftime('%d/%m/%Y')}")
     print(f"  Horizonte         : {HORIZONTE_MESES} meses  │  Lead time: {LEAD_TIME_DIAS} dias corridos")
-    print(f"  SS classes A/B    : {MESES_COBERTURA_SS} meses rolling")
-    print(f"  Classe C          : trigger <1m cobertura → pedido cobre {CLASSE_C_COBERTURA_MESES}m (sem limite/ano)")
+    print(f"  SS classes A/B    : LT + {MESES_COBERTURA_SS} meses (backward scheduling)")
+    print(f"  Classe C          : LT + {CLASSE_C_COBERTURA_MESES} meses (backward scheduling)")
 
     os.makedirs(DIR_DADOS, exist_ok=True)
     os.makedirs(DIR_SAIDA, exist_ok=True)

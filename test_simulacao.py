@@ -10,7 +10,7 @@ Valida:
   3. Cálculo MRP período a período (estoque projetado, SS, pedidos gerados)
   4. Janela de lead time — entradas_em_transito não mascara rupturas futuras
   5. Teto phase-out (horizonte_finito) — sem over-ordering além da demanda
-  6. Classe C: trigger 1 mês, cobertura 4 meses
+  6. Backward scheduling: trigger LT+cobertura meses à frente (todas as classes)
   7. Parcelas financeiras — datas, valores, nº da parcela, sem dobro na última
   8. Rateio por departamento/programa
 
@@ -271,18 +271,19 @@ print(df_mrp[df_mrp["material"] == "10001"][
 check("10001 est_proj 2026-04 = 2", ep("10001", "2026-04"),  2)
 check("10001 est_proj 2026-05 = 5 (PO chega)", ep("10001", "2026-05"),  5)
 check("10001 est_proj 2026-06 = 4", ep("10001", "2026-06"),  4)
-check("10001 est_proj 2026-07 = 3", ep("10001", "2026-07"),  3)
-check("10001 est_proj 2026-08 = 2", ep("10001", "2026-08"),  2)
-check("10001 est_proj 2026-09 = 1", ep("10001", "2026-09"),  1)
-# Nenhum pedido até ago (janela LT cobre o PO aberto)
+# Backward scheduling (LT=3m + SS=3m = janela 6m): pedidos antecipados para mai/jun
+# Est projetado sobe porque os novos pedidos chegam em jul/ago
+check("10001 est_proj 2026-07 = 4", ep("10001", "2026-07"),  4)
+check("10001 est_proj 2026-08 = 4", ep("10001", "2026-08"),  4)
+check("10001 est_proj 2026-09 = 3", ep("10001", "2026-09"),  3)
+# Apr: estoque_virtual=6 == dem_ate_cobertura=6 → sem pedido (trigger não dispara)
 check("10001 sem pedido 2026-04 (LT window cobre PO)", ped_gen("10001", "2026-04"), 0)
 
 ped_10001 = df_ped[df_ped["material"] == "10001"].sort_values("periodo_necessidade")
-# Após fix dupla-contagem: pedido de dez/26 eliminado (demanda 2027=0, ss_futuro=0)
 check("10001: nº pedidos gerados = 2", len(ped_10001), 2)
 if len(ped_10001) >= 1:
-    check("10001: 1º necessidade em 2026-08", ped_10001.iloc[0]["periodo_necessidade"], "2026-08")
-    check("10001: 1º entrega em 2026-10",     ped_10001.iloc[0]["periodo_entrega"],      "2026-10")
+    check("10001: 1º necessidade em 2026-05", ped_10001.iloc[0]["periodo_necessidade"], "2026-05")
+    check("10001: 1º entrega em 2026-07",     ped_10001.iloc[0]["periodo_entrega"],      "2026-07")
     check("10001: 1º qty = 1",                int(ped_10001.iloc[0]["quantidade"]),       1)
 
 # ── 3b. Material 10002 (Classe B, LT=60d → 2 meses) ─────────────────────────
@@ -299,8 +300,9 @@ check("10002 sem pedido 2026-04 (LT window cobre PO)", ped_gen("10002", "2026-04
 ped_10002 = df_ped[df_ped["material"] == "10002"].sort_values("periodo_necessidade")
 check("10002: nº pedidos gerados = 2", len(ped_10002), 2)
 if len(ped_10002) >= 1:
-    check("10002: 1º necessidade em 2026-08", ped_10002.iloc[0]["periodo_necessidade"], "2026-08")
-    check("10002: 1º entrega em 2026-09",     ped_10002.iloc[0]["periodo_entrega"],      "2026-09")
+    # Backward scheduling (LT=2m + SS=3m = janela 5m): trigger antecipado para jun
+    check("10002: 1º necessidade em 2026-06", ped_10002.iloc[0]["periodo_necessidade"], "2026-06")
+    check("10002: 1º entrega em 2026-07",     ped_10002.iloc[0]["periodo_entrega"],      "2026-07")
     check("10002: 1º qty = 2",                int(ped_10002.iloc[0]["quantidade"]),       2)
 
 # ── 3c. Material 10003 (Classe C, LT=45d → 2 meses) ─────────────────────────
@@ -310,18 +312,18 @@ print(df_mrp[df_mrp["material"] == "10003"][
      "estoque_seguranca_3m","pedido_gerado","periodo_entrega"]
 ].to_string(index=False))
 
-# Trigger C: estoque_virtual < dem do mês → 1ª trigger em 2026-08 (est=5 < dem=10)
-check("10003: nenhum pedido antes de ago (estoque > dem)",
-      all(ped_gen("10003", p) == 0 for p in ["2026-04","2026-05","2026-06","2026-07"]), True)
+# Backward scheduling (LT=2m + Cobertura=4m = janela 6m):
+# Apr: est_virtual=45 < dem_ate_cob=60 → trigger imediato, 3 pedidos mensais
+check("10003: pedido antecipado em 2026-04 (backward scheduling)",
+      ped_gen("10003", "2026-04") > 0, True)
 
 ped_10003 = df_ped[df_ped["material"] == "10003"].sort_values("periodo_necessidade")
-# Pedido de dez/26 eliminado: ss_futuro(jan-abr/27)=0 → nec=0 (sem demanda em 2027)
-check("10003: nº pedidos gerados = 1", len(ped_10003), 1)
+check("10003: nº pedidos gerados = 3", len(ped_10003), 3)
 if len(ped_10003) >= 1:
-    check("10003: 1º trigger em 2026-08", ped_10003.iloc[0]["periodo_necessidade"], "2026-08")
-    check("10003: 1º entrega em 2026-09", ped_10003.iloc[0]["periodo_entrega"],      "2026-09")
-    # qty: ss_ordem(40) - est_virtual(5) = 35  →  teto permite (50-5=45)
-    check("10003: 1º qty = 35 (cobertura 4m)", int(ped_10003.iloc[0]["quantidade"]), 35)
+    check("10003: 1º trigger em 2026-04", ped_10003.iloc[0]["periodo_necessidade"], "2026-04")
+    check("10003: 1º entrega em 2026-05", ped_10003.iloc[0]["periodo_entrega"],      "2026-05")
+    # qty: dem_ate_cob(60) - est_virtual(45) = 15 → PO aberto de 30 já cobre parcialmente
+    check("10003: 1º qty = 15 (backward shortage)", int(ped_10003.iloc[0]["quantidade"]), 15)
 
 # ── 3d. Material 10004 (Classe C, LT=7d → 1 mês, bump para mês seguinte) ────
 print("\n  [10004 — Classe C, LT=7d, entrega bumped +1m]")
@@ -331,14 +333,14 @@ print(df_mrp[df_mrp["material"] == "10004"][
 ].to_string(index=False))
 
 ped_10004 = df_ped[df_ped["material"] == "10004"].sort_values("periodo_necessidade")
-# Idem 10003 — pedido dez/26 eliminado pela correção de dupla-contagem
-check("10004: nº pedidos gerados = 1", len(ped_10004), 1)
+# Backward scheduling (LT=1m + Cobertura=4m = janela 5m): 4 pedidos mensais de 100
+check("10004: nº pedidos gerados = 4", len(ped_10004), 4)
 if len(ped_10004) >= 1:
-    check("10004: 1º trigger em 2026-08", ped_10004.iloc[0]["periodo_necessidade"], "2026-08")
-    # LT=7d: 2026-08-01 + 7 = 2026-08-08 → mesmo mês → bump para 2026-09
-    check("10004: 1º entrega = 2026-09 (LT<1m → bump)",
-          ped_10004.iloc[0]["periodo_entrega"], "2026-09")
-    check("10004: 1º qty = 400 (cobertura 4m×100)", int(ped_10004.iloc[0]["quantidade"]), 400)
+    check("10004: 1º trigger em 2026-04", ped_10004.iloc[0]["periodo_necessidade"], "2026-04")
+    # LT=7d: 2026-04-01 + 7 = 2026-04-08 → mesmo mês → bump para 2026-05
+    check("10004: 1º entrega = 2026-05 (LT<1m → bump)",
+          ped_10004.iloc[0]["periodo_entrega"], "2026-05")
+    check("10004: 1º qty = 100 (backward shortage)", int(ped_10004.iloc[0]["quantidade"]), 100)
 
 # ── 3e. Estoque nunca negativo em nenhum material ────────────────────────────
 for mat in ["10001", "10002", "10003", "10004"]:
