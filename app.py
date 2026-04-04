@@ -1540,7 +1540,16 @@ if "resultado" in st.session_state:
                                 f"quando a equipe de **Compras** disponibilizar contratos vigentes."
                             )
 
-                    _chart_financeiro(_vis_orc_f.drop("TOTAL GERAL", errors="ignore"), "Compromisso por Mês de Emissão")
+                    def _merge_mrp_para_grafico(_pv: pd.DataFrame) -> pd.DataFrame:
+                        """Funde colunas MRP Com/Sem Contrato em 'Novo Pedido (MRP)' para o gráfico."""
+                        _pv2 = _pv.copy()
+                        _mrp_split = [_c for _c in _pv2.columns if "Novo Pedido (MRP)" in str(_c) and _c != "Novo Pedido (MRP)"]
+                        if _mrp_split:
+                            _pv2["Novo Pedido (MRP)"] = _pv2.get("Novo Pedido (MRP)", 0) + _pv2[_mrp_split].sum(axis=1)
+                            _pv2 = _pv2.drop(columns=_mrp_split)
+                        return _pv2
+
+                    _chart_financeiro(_merge_mrp_para_grafico(_vis_orc_f.drop("TOTAL GERAL", errors="ignore")), "Compromisso por Mês de Emissão")
                     st.caption("💡 Clique em uma linha para ver o detalhamento dos pedidos daquele mês.")
                     agg_fmt = _vis_orc_f.copy()
                     for _c in agg_fmt.columns:
@@ -1642,7 +1651,7 @@ if "resultado" in st.session_state:
                                 f"à contratação** pela equipe de Compras."
                             )
 
-                    _chart_financeiro(_vis_cx_f.drop("TOTAL GERAL", errors="ignore"), "Desembolso por Mês de Pagamento")
+                    _chart_financeiro(_merge_mrp_para_grafico(_vis_cx_f.drop("TOTAL GERAL", errors="ignore")), "Desembolso por Mês de Pagamento")
 
                     # ── Diagnóstico automático de picos ───────────────────────
                     _cx_totais = (
