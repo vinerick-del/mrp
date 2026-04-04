@@ -2045,10 +2045,13 @@ if "resultado" in st.session_state:
                 st.markdown("#### Detalhamento por Material")
 
                 # Ordenar: sem contrato primeiro
-                _cob = _cob.sort_values("Pedidos s/ Contrato (R$)", ascending=False)
+                _cob = _cob.sort_values("Pedidos s/ Contrato (R$)", ascending=False).reset_index(drop=True)
+
+                # Máscara numérica antes de formatar
+                _sem_mask = (_cob["Pedidos s/ Contrato (R$)"] > 0).to_dict()
 
                 def _style_cont_row(_row):
-                    if _row.get("Pedidos s/ Contrato (R$)", 0) > 0:
+                    if _sem_mask.get(_row.name, False):
                         return ["background-color: #fff3cd"] * len(_row)
                     return [""] * len(_row)
 
