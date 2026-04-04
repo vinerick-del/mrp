@@ -193,6 +193,52 @@ def _gerar_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPERS DE RATEIO MANUAL
+# ─────────────────────────────────────────────────────────────────────────────
+_RATEIO_MANUAL_PATH = os.path.join(DIR_DADOS, "rateio_manual.csv")
+
+
+def _carregar_rateio_manual() -> pd.DataFrame:
+    """Retorna DataFrame do rateio_manual.csv ou vazio se não existir."""
+    if not os.path.exists(_RATEIO_MANUAL_PATH):
+        return pd.DataFrame(
+            columns=["material", "departamento", "programa_orcamentario", "proporcao", "atualizado_em"]
+        )
+    try:
+        return pd.read_csv(_RATEIO_MANUAL_PATH, sep=";", dtype={"material": str})
+    except Exception:
+        return pd.DataFrame(
+            columns=["material", "departamento", "programa_orcamentario", "proporcao", "atualizado_em"]
+        )
+
+
+def _salvar_rateio_manual(material: str, linhas: list[dict]) -> None:
+    """Persiste rateio manual para um material.
+
+    Args:
+        material: código do material.
+        linhas: lista de dicts com chaves departamento, programa_orcamentario,
+                proporcao_pct (valor 0-100; será convertido para 0-1 ao salvar).
+    """
+    df = _carregar_rateio_manual()
+    df = df[df["material"].astype(str) != str(material)].copy()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_rows = pd.DataFrame([
+        {
+            "material"              : str(material),
+            "departamento"          : l["departamento"],
+            "programa_orcamentario" : l["programa_orcamentario"],
+            "proporcao"             : round(l["proporcao_pct"] / 100.0, 6),
+            "atualizado_em"         : now_str,
+        }
+        for l in linhas
+    ])
+    df = pd.concat([df, new_rows], ignore_index=True)
+    os.makedirs(DIR_DADOS, exist_ok=True)
+    df.to_csv(_RATEIO_MANUAL_PATH, sep=";", index=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPER: calcular alertas a partir dos resultados MRP
 # ─────────────────────────────────────────────────────────────────────────────
 def _calcular_alertas(
@@ -317,6 +363,13 @@ with st.sidebar:
 
     st.divider()
     st.caption("**Fluxo:** Arquivos SAP → Normalização → Motor MRP → Dashboard + Excel")
+
+    # Indicador de rateio manual configurado
+    _rm_sidebar = _carregar_rateio_manual()
+    if not _rm_sidebar.empty and "material" in _rm_sidebar.columns:
+        _n_rm = _rm_sidebar["material"].nunique()
+        if _n_rm > 0:
+            st.info(f"🔧 Rateio manual: **{_n_rm}** material(is) → aba ⚠️ Rateio Pendente")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -684,7 +737,7 @@ if "resultado" in st.session_state:
     st.divider()
 
     # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat = st.tabs([
+    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend = st.tabs([
         "📊 MRP Projetado",
         "📅 Projeção de Estoque",
         "🛒 Pedidos a Gerar",
@@ -692,6 +745,7 @@ if "resultado" in st.session_state:
         "🔴 Alertas de Ruptura",
         "📋 Saldo de Contrato",
         "📂 Rateio",
+        "⚠️ Rateio Pendente",
     ])
 
     with tab_mrp:
@@ -1552,6 +1606,292 @@ if "resultado" in st.session_state:
             st.info("Nenhum dado de rateio disponível.")
         else:
             st.dataframe(df_rateio, use_container_width=True, height=380)
+
+    with tab_rat_pend:
+        st.subheader("Rateio Pendente / Atribuição Manual")
+
+        # ── Auxiliares ────────────────────────────────────────────────────────
+        _mat_df   = r.get("materiais_df", pd.DataFrame())
+        _abc_df   = r.get("abc",          pd.DataFrame())
+        _dem_df   = r.get("demanda_df",   pd.DataFrame())
+        _dd_df    = r.get("demanda_detail_df", pd.DataFrame())
+
+        _desc_map : dict = {}
+        if not _mat_df.empty and "descricao" in _mat_df.columns:
+            _desc_map = dict(zip(_mat_df["material"].astype(str), _mat_df["descricao"]))
+
+        _preco_map: dict = {}
+        if not _abc_df.empty and "valor_unitario" in _abc_df.columns:
+            _preco_map = dict(zip(_abc_df["material"].astype(str), _abc_df["valor_unitario"]))
+
+        # ── Seção 1: Log de materiais sem rateio ─────────────────────────────
+        st.markdown("#### 📋 Materiais sem rateio definido")
+
+        if df_rateio.empty or "departamento" not in df_rateio.columns:
+            st.info("Nenhum dado de rateio disponível. Processe o MRP primeiro.")
+        else:
+            _df_nao_def = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy()
+            _mats_nao_def = sorted(_df_nao_def["material"].astype(str).unique().tolist()) \
+                if not _df_nao_def.empty else []
+
+            n_pend = len(_mats_nao_def)
+            if n_pend > 0:
+                st.warning(f"⚠️ **{n_pend} material(is) pendente(s) de rateio manual**")
+            else:
+                st.success("✅ Todos os materiais têm rateio definido.")
+
+            if not _df_nao_def.empty:
+                def _motivo(mat: str) -> str:
+                    mat = str(mat)
+                    if not _dem_df.empty and mat not in _dem_df["material"].astype(str).values:
+                        return "sem demanda cadastrada"
+                    if not _dd_df.empty and "departamento" in _dd_df.columns:
+                        _m = _dd_df[_dd_df["material"].astype(str) == mat]
+                        if _m.empty or _m["departamento"].fillna("").str.strip().eq("").all():
+                            return "demanda sem departamento"
+                    return "material não mapeado"
+
+                _sumario = (
+                    _df_nao_def.groupby("material", as_index=False)
+                    .agg(qtd_total_rateada=("qtd_rateada", "sum"))
+                )
+                _sumario["material"]    = _sumario["material"].astype(str)
+                _sumario["descricao"]   = _sumario["material"].map(_desc_map).fillna("-")
+                _sumario["valor_unit"]  = _sumario["material"].map(_preco_map).fillna(0.0)
+                _sumario["valor_total"] = (_sumario["qtd_total_rateada"] * _sumario["valor_unit"]).round(2)
+                _sumario["motivo"]      = _sumario["material"].apply(_motivo)
+                st.dataframe(
+                    _sumario[["material", "descricao", "qtd_total_rateada", "valor_total", "motivo"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        st.divider()
+
+        # ── Seção 2: Formulário de atribuição manual ──────────────────────────
+        st.markdown("#### ✏️ Atribuição Manual por Material")
+
+        _rm_df = _carregar_rateio_manual()
+        _mats_manual = sorted(
+            _rm_df["material"].astype(str).unique().tolist()
+        ) if not _rm_df.empty and "material" in _rm_df.columns else []
+
+        _mats_opcoes = sorted(set(
+            (locals().get("_mats_nao_def") or []) + _mats_manual
+        ))
+
+        if not _mats_opcoes:
+            st.info("Nenhum material disponível para rateio manual.")
+        else:
+            mat_sel = st.selectbox(
+                "Selecionar material",
+                _mats_opcoes,
+                key="rm_mat_sel",
+                help="Materiais com NAO_DEFINIDO + materiais já com rateio manual (para edição)",
+            )
+
+            if mat_sel:
+                _desc_sel = _desc_map.get(str(mat_sel), "-")
+                _qtd_nao_def = 0.0
+                if "locals" in dir() and not df_rateio.empty:
+                    _nao_def_sub = df_rateio[
+                        (df_rateio["material"].astype(str) == str(mat_sel)) &
+                        (df_rateio["departamento"] == "NAO_DEFINIDO")
+                    ]
+                    _qtd_nao_def = _nao_def_sub["qtd_rateada"].sum()
+                st.caption(f"Descrição: **{_desc_sel}** | Qtd pendente: **{_qtd_nao_def:,.2f} un.**")
+
+                # Listas de departamentos/programas disponíveis
+                _depts_set: set[str] = set()
+                _progs_set: set[str] = set()
+                for _src_df in (df_rateio, _dd_df):
+                    if not _src_df.empty:
+                        if "departamento" in _src_df.columns:
+                            _depts_set |= set(
+                                _src_df["departamento"]
+                                .dropna().astype(str).str.strip()
+                                .unique().tolist()
+                            )
+                        if "programa_orcamentario" in _src_df.columns:
+                            _progs_set |= set(
+                                _src_df["programa_orcamentario"]
+                                .dropna().astype(str).str.strip()
+                                .unique().tolist()
+                            )
+                _depts_list = sorted(
+                    d for d in _depts_set if d not in ("NAO_DEFINIDO", "")
+                ) or ["DPC"]
+                _progs_list = sorted(
+                    p for p in _progs_set if p not in ("NAO_DEFINIDO", "")
+                ) or ["INDEFINIDO"]
+                _depts_opts = _depts_list + ["Outro"]
+                _progs_opts = _progs_list + ["Outro"]
+
+                # Valores pré-preenchidos do rateio manual existente
+                _existing_rows: list[dict] = []
+                if not _rm_df.empty and "material" in _rm_df.columns:
+                    _ex = _rm_df[_rm_df["material"].astype(str) == str(mat_sel)]
+                    _existing_rows = _ex.to_dict("records")
+
+                # Session state: número de linhas do formulário
+                _linhas_key = f"rm_n_linhas_{mat_sel}"
+                if _linhas_key not in st.session_state:
+                    st.session_state[_linhas_key] = max(1, len(_existing_rows))
+
+                n_linhas = st.session_state[_linhas_key]
+                linhas_form: list[dict] = []
+
+                for _i in range(n_linhas):
+                    _c1, _c2, _c3 = st.columns([3, 3, 1])
+                    _ex_row = _existing_rows[_i] if _i < len(_existing_rows) else {}
+
+                    # Departamento
+                    _def_dept = str(_ex_row.get("departamento", "")) if _ex_row else ""
+                    _dept_idx = _depts_opts.index(_def_dept) if _def_dept in _depts_opts else 0
+                    _dept_sel = _c1.selectbox(
+                        f"Departamento {_i+1}", _depts_opts,
+                        index=_dept_idx, key=f"rm_dept_{mat_sel}_{_i}",
+                    )
+                    if _dept_sel == "Outro":
+                        _dept_val = _c1.text_input(
+                            f"Departamento customizado {_i+1}",
+                            key=f"rm_dept_outro_{mat_sel}_{_i}",
+                        )
+                    else:
+                        _dept_val = _dept_sel
+
+                    # Programa orçamentário
+                    _def_prog = str(_ex_row.get("programa_orcamentario", "")) if _ex_row else ""
+                    _prog_idx = _progs_opts.index(_def_prog) if _def_prog in _progs_opts else 0
+                    _prog_sel = _c2.selectbox(
+                        f"Programa {_i+1}", _progs_opts,
+                        index=_prog_idx, key=f"rm_prog_{mat_sel}_{_i}",
+                    )
+                    if _prog_sel == "Outro":
+                        _prog_val = _c2.text_input(
+                            f"Programa customizado {_i+1}",
+                            key=f"rm_prog_outro_{mat_sel}_{_i}",
+                        )
+                    else:
+                        _prog_val = _prog_sel
+
+                    # Percentual
+                    _def_pct  = int(round(float(_ex_row.get("proporcao", 0)) * 100)) if _ex_row else 0
+                    _pct_val  = _c3.number_input(
+                        f"% {_i+1}", min_value=0, max_value=100,
+                        step=5, value=_def_pct,
+                        key=f"rm_pct_{mat_sel}_{_i}",
+                    )
+
+                    linhas_form.append({
+                        "departamento"          : _dept_val,
+                        "programa_orcamentario" : _prog_val,
+                        "proporcao_pct"         : _pct_val,
+                    })
+
+                # Botão para adicionar linha
+                if st.button("➕ Adicionar linha", key=f"rm_add_{mat_sel}"):
+                    st.session_state[_linhas_key] = n_linhas + 1
+                    st.rerun()
+
+                # Validação e ações
+                _soma = sum(l["proporcao_pct"] for l in linhas_form)
+                if _soma != 100:
+                    st.error(f"❌ Soma dos percentuais = **{_soma}%** (deve ser exatamente 100%)")
+
+                _col_s, _col_r = st.columns(2)
+                if _col_s.button(
+                    "💾 Salvar",
+                    key=f"rm_salvar_{mat_sel}",
+                    disabled=(_soma != 100),
+                    use_container_width=True,
+                ):
+                    _salvar_rateio_manual(str(mat_sel), linhas_form)
+                    st.success(f"✅ Rateio manual salvo para **{mat_sel}**. Reprocessando MRP...")
+                    st.session_state.pop("resultado", None)
+                    st.rerun()
+
+                if _col_r.button(
+                    "🗑 Remover rateio manual",
+                    key=f"rm_remover_{mat_sel}",
+                    use_container_width=True,
+                ):
+                    _df_rm_del = _carregar_rateio_manual()
+                    _df_rm_del = _df_rm_del[_df_rm_del["material"].astype(str) != str(mat_sel)]
+                    os.makedirs(DIR_DADOS, exist_ok=True)
+                    _df_rm_del.to_csv(_RATEIO_MANUAL_PATH, sep=";", index=False)
+                    if _linhas_key in st.session_state:
+                        del st.session_state[_linhas_key]
+                    st.success(f"✅ Rateio manual removido para **{mat_sel}**. Reprocessando MRP...")
+                    st.session_state.pop("resultado", None)
+                    st.rerun()
+
+        st.divider()
+
+        # ── Seção 3: Importação em lote ───────────────────────────────────────
+        st.markdown("#### 📤 Importação em Lote")
+        st.caption(
+            "Formato CSV esperado: `material;departamento;programa_orcamentario;proporcao`  \n"
+            "Coluna `proporcao` aceita 0-1 (ex.: 0.70) ou 0-100 (ex.: 70).  \n"
+            "A soma por material deve ser exatamente 100%."
+        )
+        f_rateio_lote = st.file_uploader(
+            "Upload CSV de rateio em lote",
+            type=["csv", "txt"],
+            key="up_rateio_lote",
+        )
+        if f_rateio_lote:
+            try:
+                f_rateio_lote.seek(0)
+                df_lote = pd.read_csv(f_rateio_lote, sep=";", dtype={"material": str})
+                df_lote.columns = [c.strip().lower() for c in df_lote.columns]
+                # Normalizar nomes de coluna (case/espaço)
+                _col_rename = {
+                    "mat"      : "material",
+                    "dept"     : "departamento",
+                    "prog"     : "programa_orcamentario",
+                    "prop"     : "proporcao",
+                    "percent"  : "proporcao",
+                    "pct"      : "proporcao",
+                    "percentual": "proporcao",
+                }
+                df_lote.rename(columns=_col_rename, inplace=True)
+                if "material" not in df_lote.columns:
+                    expected = ["material", "departamento", "programa_orcamentario", "proporcao"]
+                    df_lote.columns = expected[:len(df_lote.columns)]
+                df_lote["material"] = df_lote["material"].astype(str).str.strip()
+                df_lote["proporcao"] = pd.to_numeric(df_lote["proporcao"], errors="coerce").fillna(0.0)
+                # Detectar escala (0-1 vs 0-100)
+                if df_lote["proporcao"].max() <= 1.0:
+                    df_lote["proporcao_pct"] = (df_lote["proporcao"] * 100).round(4)
+                else:
+                    df_lote["proporcao_pct"] = df_lote["proporcao"].round(4)
+                # Validar soma por material
+                _erros_lote: list[str] = []
+                for _mat_l, _grp_l in df_lote.groupby("material"):
+                    _soma_l = round(_grp_l["proporcao_pct"].sum(), 2)
+                    if abs(_soma_l - 100.0) > 0.1:
+                        _erros_lote.append(f"**{_mat_l}**: soma = {_soma_l}% ≠ 100%")
+                if _erros_lote:
+                    for _e in _erros_lote:
+                        st.error(f"❌ {_e}")
+                else:
+                    st.success(f"✅ {df_lote['material'].nunique()} material(is) válido(s) — prévia:")
+                    st.dataframe(
+                        df_lote[["material", "departamento", "programa_orcamentario", "proporcao_pct"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    if st.button("✅ Confirmar importação em lote", key="rm_confirmar_lote"):
+                        for _mat_l in df_lote["material"].unique():
+                            _grp_l = df_lote[df_lote["material"] == _mat_l]
+                            _lns = _grp_l[["departamento", "programa_orcamentario", "proporcao_pct"]].to_dict("records")
+                            _salvar_rateio_manual(_mat_l, _lns)
+                        st.success(f"✅ {df_lote['material'].nunique()} material(is) importado(s). Reprocessando MRP...")
+                        st.session_state.pop("resultado", None)
+                        st.rerun()
+            except Exception as _e_lote:
+                st.error(f"Erro ao ler arquivo: {_e_lote}")
 
     # ── Download Excel ────────────────────────────────────────────────────────
     st.divider()

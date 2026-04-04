@@ -1909,7 +1909,14 @@ def passo_12_rateio(
 ) -> pd.DataFrame:
     """Parâmetro 'demanda_detail' é opcional: quando fornecido e rateio_base.csv
     não existir, as proporções são derivadas da própria demanda DTM.
-    Quando rateio_base.csv existe, comportamento idêntico ao original."""
+    Quando rateio_base.csv existe, comportamento idêntico ao original.
+
+    Prioridade de rateio (maior → menor):
+      1. rateio_manual.csv — override manual por material (salvo pelo usuário no app)
+      2. rateio_base.csv   — base estática de proporções
+      3. derivar da demanda DTM (quando demanda_detail fornecido)
+      4. NAO_DEFINIDO (fallback)
+    """
     separador("PASSO 12 │ RATEIO POR DEPARTAMENTO / PROGRAMA ORÇAMENTÁRIO")
 
     rb_path = os.path.join(DIR_DADOS, "rateio_base.csv")
@@ -1925,6 +1932,26 @@ def passo_12_rateio(
         rateio_base = pd.DataFrame(
             columns=["material", "departamento", "programa_orcamentario", "proporcao"]
         )
+
+    # ── Override com rateio_manual.csv (prioridade máxima) ───────────────────
+    _rm_path = os.path.join(DIR_DADOS, "rateio_manual.csv")
+    _n_manual = 0
+    if os.path.exists(_rm_path):
+        try:
+            rm = pd.read_csv(_rm_path, sep=";", dtype={"material": str})
+            rm["material"] = rm["material"].astype(str).str.strip()
+            rm = rm[["material", "departamento", "programa_orcamentario", "proporcao"]].dropna(
+                subset=["material", "departamento", "programa_orcamentario", "proporcao"]
+            )
+            if not rm.empty:
+                rm_mats = set(rm["material"].unique())
+                # Remove entradas da base substituídas pelo manual
+                rateio_base = rateio_base[~rateio_base["material"].isin(rm_mats)].copy()
+                rateio_base = pd.concat([rateio_base, rm], ignore_index=True)
+                _n_manual = len(rm_mats)
+                print(f"  Rateio manual        : {_n_manual} material(is) com override")
+        except Exception as _e_rm:
+            print(f"  ⚠ Não foi possível carregar rateio_manual.csv: {_e_rm}")
 
     # ── Montar tabela unificada de pedidos ────────────────────────────────────
     linhas_pedidos: list[dict] = []
@@ -2007,6 +2034,14 @@ def passo_12_rateio(
         sub = df_rateio[df_rateio["tipo"] == tipo]
         if not sub.empty:
             print(f"  {tipo}: {len(sub)} linhas de rateio │ {sub['qtd_rateada'].sum():,.1f} un. totais rateadas")
+
+    # ── Resumo por origem do rateio ───────────────────────────────────────────
+    _n_nao_def  = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"]["material"].nunique()
+    _n_total    = df_rateio["material"].nunique()
+    _n_derivado = max(0, _n_total - _n_manual - _n_nao_def)
+    print(f"\n  Rateio manual    : {_n_manual} material(is)")
+    print(f"  Rateio derivado  : {_n_derivado} material(is)")
+    print(f"  NAO_DEFINIDO     : {_n_nao_def} material(is) pendente(s)")
 
     return df_rateio
 
