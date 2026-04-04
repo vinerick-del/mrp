@@ -287,6 +287,110 @@ def _calcular_alertas(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPER: classificar pedidos MRP por cobertura de contrato
+# ─────────────────────────────────────────────────────────────────────────────
+def _classificar_contratos_mrp(
+    df_ped: pd.DataFrame, contratos: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Classifica cada pedido MRP gerado como coberto ou não por contrato vigente.
+
+    Regras:
+      saldo_contrato == 1  → Acordo de Preço  : quantidade ilimitada;
+                              coberto se data_fim_vigencia >= data_pedido.
+      saldo_contrato >  1  → Acordo de Quantidade: saldo deduzido cronologicamente.
+      Sem contrato vigente → "Sem Contrato".
+
+    Pode expandir linhas quando um pedido é parcialmente coberto por saldo.
+
+    Retorna DataFrame com colunas adicionais:
+      _origem_mrp      — "Novo Pedido (MRP) — Com Contrato" / "… — Sem Contrato"
+      _status_contrato — detalhe (Com Contrato / Contrato Vencido / Saldo Esgotado …)
+      _tipo_contrato   — "Acordo de Preço" / "Acordo de Quantidade" / "—"
+    """
+    if df_ped.empty:
+        out = df_ped.copy()
+        for _c in ["_origem_mrp", "_status_contrato", "_tipo_contrato"]:
+            out[_c] = ""
+        return out
+
+    # Mapa: material → {tipo, saldo, vigencia}
+    _cmap: dict = {}
+    if not contratos.empty and "saldo_contrato" in contratos.columns:
+        for _, _cr in contratos.iterrows():
+            _mat_c = str(_cr["material"]).strip()
+            _saldo_c = float(_cr.get("saldo_contrato") or 0)
+            _vig_raw = _cr.get("data_fim_vigencia")
+            _vig_ts = None
+            if pd.notna(_vig_raw):
+                _vig_ts = pd.to_datetime(_vig_raw, format="%d/%m/%Y", errors="coerce")
+                if pd.isna(_vig_ts):
+                    _vig_ts = pd.to_datetime(_vig_raw, errors="coerce")
+            _cmap[_mat_c] = {
+                "tipo"    : "preco" if _saldo_c <= 1 else "quantidade",
+                "saldo"   : _saldo_c,
+                "vigencia": _vig_ts,
+            }
+
+    # Saldo corrente por material (deduzido cronologicamente para acordos de qtd)
+    _saldo_rest: dict = {_m: _d["saldo"] for _m, _d in _cmap.items()}
+
+    _df = df_ped.copy()
+    _df["_dt_ped"] = pd.to_datetime(_df["data_pedido"], format="%d/%m/%Y", errors="coerce")
+    _df = _df.sort_values("_dt_ped").reset_index(drop=True)
+
+    _rows: list[dict] = []
+    for _, _row in _df.iterrows():
+        _mat = str(_row.get("material", "")).strip()
+        _qty = float(_row.get("quantidade") or 0)
+        _vu  = float(_row.get("valor_unitario") or 0)
+        _dt  = _row["_dt_ped"]
+
+        def _push(_origem, _qtd, _status, _tipo):
+            _r = {**_row.to_dict(),
+                  "quantidade"         : _qtd,
+                  "valor_total_pedido" : _qtd * _vu,
+                  "_origem_mrp"        : _origem,
+                  "_status_contrato"   : _status,
+                  "_tipo_contrato"     : _tipo}
+            _rows.append(_r)
+
+        if _mat not in _cmap:
+            _push("Novo Pedido (MRP) — Sem Contrato", _qty, "Sem Contrato", "—")
+        else:
+            _ci  = _cmap[_mat]
+            _vig = _ci["vigencia"]
+            _vig_ok = (
+                _vig is None or pd.isna(_vig)
+                or (pd.notna(_dt) and _dt <= _vig)
+            )
+            _tl = "Acordo de Preço" if _ci["tipo"] == "preco" else "Acordo de Quantidade"
+
+            if _ci["tipo"] == "preco":
+                if _vig_ok:
+                    _push("Novo Pedido (MRP) — Com Contrato",   _qty, "Com Contrato",    _tl)
+                else:
+                    _push("Novo Pedido (MRP) — Sem Contrato",   _qty, "Contrato Vencido", _tl)
+            else:
+                _bal = _saldo_rest.get(_mat, 0.0)
+                if _bal <= 0:
+                    _push("Novo Pedido (MRP) — Sem Contrato",   _qty, "Saldo Esgotado",  _tl)
+                elif _bal >= _qty:
+                    _saldo_rest[_mat] -= _qty
+                    _push("Novo Pedido (MRP) — Com Contrato",   _qty, "Com Contrato",    _tl)
+                else:
+                    # Cobertura parcial → duas linhas
+                    _saldo_rest[_mat] = 0.0
+                    _push("Novo Pedido (MRP) — Com Contrato",   _bal,        "Com Contrato (parcial)", _tl)
+                    _push("Novo Pedido (MRP) — Sem Contrato",   _qty - _bal, "Saldo Esgotado",         _tl)
+
+    _out = pd.DataFrame(_rows)
+    if "_dt_ped" in _out.columns:
+        _out = _out.drop(columns=["_dt_ped"])
+    return _out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR — UPLOADS E STATUS DE PERSISTÊNCIA
 # ─────────────────────────────────────────────────────────────────────────────
 def _label_upload(numero: str, descricao: str, chave: str) -> str:
@@ -420,6 +524,10 @@ if _disparar:
             if cont_path:
                 try:
                     contratos = ler_contratos_sap(cont_path)
+                    if not contratos.empty and "saldo_contrato" in contratos.columns:
+                        contratos["tipo_contrato"] = contratos["saldo_contrato"].apply(
+                            lambda _s: "Acordo de Preço" if float(_s or 0) <= 1 else "Acordo de Quantidade"
+                        )
                 except Exception as _e_cont:
                     print(f"  ⚠ Contratos SAP não carregado ({_e_cont}) — sem verificação de saldo.")
 
@@ -479,15 +587,15 @@ if _disparar:
             _linhas_fin: list[pd.DataFrame] = []
 
             if not df_ped.empty:
-                _tmp = df_ped.copy()
+                _tmp = _classificar_contratos_mrp(df_ped, contratos)
                 print(f"  [FIN] Novos pedidos MRP      : R$ {_tmp['valor_total_pedido'].sum():,.2f}"
-                      f" ({len(_tmp)} pedidos)")
+                      f" ({len(df_ped)} pedidos → {len(_tmp)} linhas após cobertura contratual)")
                 _tmp["mes_pedido"]           = pd.to_datetime(_tmp["data_pedido"], format="%d/%m/%Y", errors="coerce").dt.to_period("M").astype(str)
                 _tmp["mes_entrega"]          = _tmp["periodo_entrega"]
                 _tmp["data_base_pagamento"]  = pd.to_datetime(_tmp["data_chegada"], format="%d/%m/%Y", errors="coerce")
                 _tmp["documento_referencia"] = None
                 _tmp["numero_pedido"]        = None
-                _tmp["origem"]               = "Novo Pedido (MRP)"
+                _tmp["origem"]               = _tmp["_origem_mrp"]
                 _tmp["valor_pedido"]         = _tmp["valor_total_pedido"]
                 _linhas_fin.append(_tmp[["origem","material","quantidade","valor_pedido",
                                          "mes_pedido","mes_entrega","data_base_pagamento",
@@ -1406,6 +1514,32 @@ if "resultado" in st.session_state:
                 if _vis_orc_f.empty:
                     st.info("Sem dados orçamentários para os filtros selecionados.")
                 else:
+                    # ── Alerta de cobertura contratual ────────────────────────
+                    _sem_cont_cols_orc = [_c for _c in _vis_orc_f.columns if "Sem Contrato" in str(_c)]
+                    _com_cont_cols_orc = [_c for _c in _vis_orc_f.columns if "Com Contrato" in str(_c)]
+                    if _sem_cont_cols_orc or _com_cont_cols_orc:
+                        _orc_nodrop = _vis_orc_f.drop("TOTAL GERAL", errors="ignore")
+                        _val_sem = _orc_nodrop[_sem_cont_cols_orc].sum().sum() if _sem_cont_cols_orc else 0.0
+                        _val_com = _orc_nodrop[_com_cont_cols_orc].sum().sum() if _com_cont_cols_orc else 0.0
+                        _val_mrp_total = _val_sem + _val_com
+                        _col_a, _col_b = st.columns(2)
+                        _col_a.metric(
+                            "✅ Com Contrato (pode emitir)",
+                            _fmt_brl_contabil(_val_com),
+                            f"{_val_com/_val_mrp_total*100:.0f}% dos pedidos MRP" if _val_mrp_total > 0 else "—",
+                        )
+                        _col_b.metric(
+                            "⚠️ Sem Contrato (depende de Compras)",
+                            _fmt_brl_contabil(_val_sem),
+                            f"{_val_sem/_val_mrp_total*100:.0f}% dos pedidos MRP" if _val_mrp_total > 0 else "—",
+                            delta_color="inverse",
+                        )
+                        if _val_sem > 0:
+                            st.warning(
+                                f"**{_fmt_brl_contabil(_val_sem)}** em pedidos futuros só poderão ser emitidos "
+                                f"quando a equipe de **Compras** disponibilizar contratos vigentes."
+                            )
+
                     _chart_financeiro(_vis_orc_f.drop("TOTAL GERAL", errors="ignore"), "Compromisso por Mês de Emissão")
                     st.caption("💡 Clique em uma linha para ver o detalhamento dos pedidos daquele mês.")
                     agg_fmt = _vis_orc_f.copy()
@@ -1482,6 +1616,32 @@ if "resultado" in st.session_state:
                 if _vis_cx_f.empty:
                     st.info("Nenhuma parcela de pagamento para os filtros selecionados.")
                 else:
+                    # ── Alerta de cobertura contratual (caixa) ────────────────
+                    _sem_cont_cols_cx = [_c for _c in _vis_cx_f.columns if "Sem Contrato" in str(_c)]
+                    _com_cont_cols_cx = [_c for _c in _vis_cx_f.columns if "Com Contrato" in str(_c)]
+                    if _sem_cont_cols_cx or _com_cont_cols_cx:
+                        _cx_nodrop = _vis_cx_f.drop("TOTAL GERAL", errors="ignore")
+                        _cx_val_sem = _cx_nodrop[_sem_cont_cols_cx].sum().sum() if _sem_cont_cols_cx else 0.0
+                        _cx_val_com = _cx_nodrop[_com_cont_cols_cx].sum().sum() if _com_cont_cols_cx else 0.0
+                        _cx_mrp_tot = _cx_val_sem + _cx_val_com
+                        _cxc1, _cxc2 = st.columns(2)
+                        _cxc1.metric(
+                            "✅ Desembolso c/ Contrato",
+                            _fmt_brl_contabil(_cx_val_com),
+                            f"{_cx_val_com/_cx_mrp_tot*100:.0f}% dos pedidos MRP" if _cx_mrp_tot > 0 else "—",
+                        )
+                        _cxc2.metric(
+                            "⚠️ Desembolso s/ Contrato",
+                            _fmt_brl_contabil(_cx_val_sem),
+                            f"{_cx_val_sem/_cx_mrp_tot*100:.0f}% dos pedidos MRP" if _cx_mrp_tot > 0 else "—",
+                            delta_color="inverse",
+                        )
+                        if _cx_val_sem > 0:
+                            st.warning(
+                                f"**{_fmt_brl_contabil(_cx_val_sem)}** do desembolso previsto está **condicionado "
+                                f"à contratação** pela equipe de Compras."
+                            )
+
                     _chart_financeiro(_vis_cx_f.drop("TOTAL GERAL", errors="ignore"), "Desembolso por Mês de Pagamento")
 
                     # ── Diagnóstico automático de picos ───────────────────────
@@ -1807,22 +1967,106 @@ if "resultado" in st.session_state:
             st.dataframe(rup, use_container_width=True)
 
     with tab_cont:
-        st.subheader("Alertas de Saldo de Contrato Insuficiente")
+        st.subheader("Cobertura Contratual dos Pedidos MRP")
         if contratos.empty:
-            st.info("Arquivo de contratos SAP não carregado.")
-        elif cont.empty:
-            st.success("✅ Todos os pedidos gerados estão cobertos pelos contratos vigentes.")
-        else:
-            st.warning(f"⚠ {len(cont)} material(is) com saldo de contrato insuficiente")
-            st.dataframe(
-                cont.style.applymap(
-                    lambda v: "background-color: #ffcccc" if isinstance(v, (int, float)) and v < 0 else "",
-                    subset=["deficit"],
-                ),
-                use_container_width=True,
+            st.info(
+                "Arquivo de contratos SAP não carregado.  \n"
+                "Carregue o arquivo **Contratos_SAP** (ME3M/ME3N, separado por TAB) para "
+                "ver quais pedidos estão cobertos e quais dependem de novos contratos."
             )
-            if not contratos.empty:
-                st.caption("Contratos vigentes carregados:")
+        else:
+            # ── Monta tabela de cobertura por material ────────────────────────
+            _fin_b = r.get("df_fin_bruto", pd.DataFrame())
+            _mrp_b = (
+                _fin_b[_fin_b["origem"].str.contains("MRP", na=False)].copy()
+                if not _fin_b.empty and "origem" in _fin_b.columns else pd.DataFrame()
+            )
+
+            if not _mrp_b.empty:
+                _mrp_b["_coberto"] = _mrp_b["origem"].str.contains("Com Contrato", na=False)
+                _cob = (
+                    _mrp_b.groupby("material").apply(
+                        lambda _g: pd.Series({
+                            "Pedidos c/ Contrato (R$)": _g.loc[_g["_coberto"], "valor_pedido"].sum(),
+                            "Pedidos s/ Contrato (R$)": _g.loc[~_g["_coberto"], "valor_pedido"].sum(),
+                            "Qtd c/ Contrato"         : _g.loc[_g["_coberto"], "quantidade"].sum(),
+                            "Qtd s/ Contrato"         : _g.loc[~_g["_coberto"], "quantidade"].sum(),
+                        })
+                    ).reset_index()
+                )
+                # Enriquecer com dados do arquivo de contratos
+                _cont_cols = ["material", "tipo_contrato", "saldo_contrato", "data_fim_vigencia"]
+                _cont_cols = [_c for _c in _cont_cols if _c in contratos.columns]
+                _cob = _cob.merge(contratos[_cont_cols], on="material", how="left")
+
+                # Enriquecer com descrição se disponível
+                _mat_df_c = r.get("materiais_df", pd.DataFrame())
+                if not _mat_df_c.empty and "descricao" in _mat_df_c.columns:
+                    _desc_c = _mat_df_c[["material","descricao"]].drop_duplicates("material")
+                    _cob = _cob.merge(_desc_c, on="material", how="left")
+                    _cob.insert(1, "Descrição", _cob.pop("descricao"))
+
+                _cob["Total MRP (R$)"] = _cob["Pedidos c/ Contrato (R$)"] + _cob["Pedidos s/ Contrato (R$)"]
+                _cob["Cobertura %"]    = (
+                    (_cob["Pedidos c/ Contrato (R$)"] / _cob["Total MRP (R$)"] * 100)
+                    .where(_cob["Total MRP (R$)"] > 0, 0)
+                    .round(1)
+                )
+
+                # Totais gerais
+                _tot_com = _cob["Pedidos c/ Contrato (R$)"].sum()
+                _tot_sem = _cob["Pedidos s/ Contrato (R$)"].sum()
+                _tot_mrp = _tot_com + _tot_sem
+                _n_sem   = (_cob["Pedidos s/ Contrato (R$)"] > 0).sum()
+
+                if _tot_sem > 0:
+                    st.warning(
+                        f"**{_n_sem} material(is)** sem cobertura contratual total ou parcial — "
+                        f"**{_fmt_brl_contabil(_tot_sem)}** dependem de novos contratos de Compras "
+                        f"({_tot_sem/_tot_mrp*100:.0f}% do total MRP)."
+                    )
+                else:
+                    st.success("✅ 100% dos pedidos MRP estão cobertos por contratos vigentes.")
+
+                _mc1, _mc2, _mc3 = st.columns(3)
+                _mc1.metric("Total MRP", _fmt_brl_contabil(_tot_mrp))
+                _mc2.metric("✅ Com Contrato", _fmt_brl_contabil(_tot_com))
+                _mc3.metric("⚠️ Sem Contrato", _fmt_brl_contabil(_tot_sem))
+
+                st.markdown("#### Detalhamento por Material")
+
+                # Ordenar: sem contrato primeiro
+                _cob = _cob.sort_values("Pedidos s/ Contrato (R$)", ascending=False)
+
+                def _style_cont_row(_row):
+                    if _row.get("Pedidos s/ Contrato (R$)", 0) > 0:
+                        return ["background-color: #fff3cd"] * len(_row)
+                    return [""] * len(_row)
+
+                _cob_fmt = _cob.copy()
+                for _fc in ["Pedidos c/ Contrato (R$)", "Pedidos s/ Contrato (R$)", "Total MRP (R$)"]:
+                    if _fc in _cob_fmt.columns:
+                        _cob_fmt[_fc] = _cob_fmt[_fc].apply(_fmt_brl_contabil)
+                for _fc in ["Qtd c/ Contrato", "Qtd s/ Contrato"]:
+                    if _fc in _cob_fmt.columns:
+                        _cob_fmt[_fc] = _cob_fmt[_fc].apply(lambda _v: f"{_v:,.0f}".replace(",","."))
+                if "Cobertura %" in _cob_fmt.columns:
+                    _cob_fmt["Cobertura %"] = _cob_fmt["Cobertura %"].apply(lambda _v: f"{_v:.1f}%")
+
+                st.dataframe(
+                    _cob_fmt.style.apply(_style_cont_row, axis=1),
+                    use_container_width=True,
+                    height=420,
+                )
+
+                st.caption(
+                    "🟡 Linhas destacadas = material com pedidos sem cobertura contratual.  \n"
+                    "**Acordo de Preço**: qtd ilimitada, verificar vigência.  \n"
+                    "**Acordo de Quantidade**: limitado ao saldo disponível."
+                )
+
+            # ── Contratos vigentes carregados ─────────────────────────────────
+            with st.expander("📄 Contratos vigentes carregados (raw)", expanded=False):
                 st.dataframe(contratos, use_container_width=True)
 
     with tab_rat:
