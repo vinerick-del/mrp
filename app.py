@@ -1489,87 +1489,95 @@ if "resultado" in st.session_state:
                         _vis_cx_f.drop("TOTAL GERAL", errors="ignore")["Total"]
                         if "Total" in _vis_cx_f.columns else pd.Series(dtype=float)
                     )
-                    if not _cx_totais.empty and len(_cx_totais) >= 3:
+                    if not _cx_totais.empty and len(_cx_totais) >= 2:
                         _media_cx = _cx_totais.mean()
                         _std_cx   = _cx_totais.std()
-                        _picos_cx = _cx_totais[_cx_totais > _media_cx + _std_cx].sort_values(ascending=False)
+                        _picos_cx_idx = set(
+                            _cx_totais[_cx_totais > _media_cx + _std_cx].index.tolist()
+                        )
+                        _n_picos = len(_picos_cx_idx)
+                        _exp_title = (
+                            f"📊 Resumo Mensal — {len(_cx_totais)} mês(es)"
+                            + (f" · ⚠️ {_n_picos} pico(s) acima do normal" if _n_picos else "")
+                        )
+                        with st.expander(_exp_title, expanded=False):
+                            _desc_pico_all = r.get("materiais_df", pd.DataFrame())
+                            _dp_map_all = dict(zip(
+                                _desc_pico_all["material"].astype(str),
+                                _desc_pico_all["descricao"]
+                            )) if not _desc_pico_all.empty and "descricao" in _desc_pico_all.columns else {}
 
-                        if not _picos_cx.empty:
-                            _pico_label = ", ".join(_picos_cx.index.tolist())
-                            with st.expander(
-                                f"🔍 Análise de Picos — {len(_picos_cx)} mês(es) acima do normal: **{_pico_label}**",
-                                expanded=True,
-                            ):
-                                for _p_mes, _p_val in _picos_cx.items():
-                                    _fator = _p_val / _media_cx if _media_cx > 0 else 0
-                                    st.markdown(
-                                        f"#### 📌 {_p_mes} — {_fmt_brl_contabil(_p_val)} "
-                                        f"&nbsp;·&nbsp; {_fator:.1f}× a média mensal"
+                            for _p_mes, _p_val in _cx_totais.sort_index().items():
+                                _is_pico = _p_mes in _picos_cx_idx
+                                _fator = _p_val / _media_cx if _media_cx > 0 else 0
+                                _pico_badge = " ⚠️ pico" if _is_pico else ""
+                                st.markdown(
+                                    f"#### {'📌' if _is_pico else '📅'} {_p_mes} — {_fmt_brl_contabil(_p_val)} "
+                                    f"&nbsp;·&nbsp; {_fator:.1f}× a média{_pico_badge}"
+                                )
+
+                                if not _fluxo_f.empty and "mes_pagamento" in _fluxo_f.columns:
+                                    _pd = _fluxo_f[_fluxo_f["mes_pagamento"] == _p_mes]
+
+                                    # Composição por origem
+                                    _orig_pico = (
+                                        _pd.groupby("origem")["valor_rateado"]
+                                        .sum().sort_values(ascending=False)
                                     )
-
-                                    if not _fluxo_f.empty and "mes_pagamento" in _fluxo_f.columns:
-                                        _pd = _fluxo_f[_fluxo_f["mes_pagamento"] == _p_mes]
-
-                                        # Composição por origem
-                                        _orig_pico = (
-                                            _pd.groupby("origem")["valor_rateado"]
-                                            .sum().sort_values(ascending=False)
-                                        )
+                                    if not _orig_pico.empty:
                                         _comp_parts = [
                                             f"{_o}: **{_fmt_brl_contabil(_v)}** ({_v/_p_val*100:.0f}%)"
                                             for _o, _v in _orig_pico.items()
                                         ]
                                         st.markdown("**Composição:** " + " · ".join(_comp_parts))
 
-                                        # Explicação causal (para MRP)
-                                        _mrp_pd = _pd[_pd["origem"].str.contains("MRP", na=False)]
-                                        if not _mrp_pd.empty:
-                                            _ems = sorted(_mrp_pd["mes_emissao"].dropna().unique()) \
-                                                if "mes_emissao" in _mrp_pd.columns else []
-                                            _ents = sorted(_mrp_pd["mes_entrega"].dropna().unique()) \
-                                                if "mes_entrega" in _mrp_pd.columns else []
-                                            _prazos = sorted(
-                                                _mrp_pd["prazo_dias"].dropna().astype(int).unique()
-                                            ) if "prazo_dias" in _mrp_pd.columns else []
-                                            _n_mat = _mrp_pd["material"].nunique() \
-                                                if "material" in _mrp_pd.columns else 0
+                                    # Explicação causal (para MRP)
+                                    _mrp_pd = _pd[_pd["origem"].str.contains("MRP", na=False)]
+                                    if not _mrp_pd.empty:
+                                        _ems = sorted(_mrp_pd["mes_emissao"].dropna().unique()) \
+                                            if "mes_emissao" in _mrp_pd.columns else []
+                                        _ents = sorted(_mrp_pd["mes_entrega"].dropna().unique()) \
+                                            if "mes_entrega" in _mrp_pd.columns else []
+                                        _prazos = sorted(
+                                            _mrp_pd["prazo_dias"].dropna().astype(int).unique()
+                                        ) if "prazo_dias" in _mrp_pd.columns else []
+                                        _n_mat = _mrp_pd["material"].nunique() \
+                                            if "material" in _mrp_pd.columns else 0
 
-                                            st.info(
-                                                f"**Por que {_p_mes}?**  \n"
-                                                f"O sistema MRP gerou pedidos para **{_n_mat} material(is)** "
-                                                f"nos meses **{', '.join(_ems) if _ems else '?'}** "
-                                                f"antecipando o lead time.  \n"
-                                                f"Esses pedidos chegam ao estoque em "
-                                                f"**{', '.join(_ents) if _ents else '?'}** "
-                                                f"e, com prazo(s) contratual(is) de "
-                                                f"**{' / '.join(str(p)+'d' for p in _prazos) if _prazos else '60/90d'}**, "
-                                                f"os pagamentos se concentram em **{_p_mes}**.  \n"
+                                        st.info(
+                                            f"**Por que {_p_mes}?**  \n"
+                                            f"O sistema MRP gerou pedidos para **{_n_mat} material(is)** "
+                                            f"nos meses **{', '.join(_ems) if _ems else '?'}** "
+                                            f"antecipando o lead time.  \n"
+                                            f"Esses pedidos chegam ao estoque em "
+                                            f"**{', '.join(_ents) if _ents else '?'}** "
+                                            f"e, com prazo(s) contratual(is) de "
+                                            f"**{' / '.join(str(p)+'d' for p in _prazos) if _prazos else '60/90d'}**, "
+                                            f"os pagamentos se concentram em **{_p_mes}**.  \n"
+                                            + (
                                                 f"ℹ️ O valor total anual **não muda** — é uma concentração "
                                                 f"de timing, não um aumento de gasto."
+                                                if _is_pico else ""
+                                            )
+                                        )
+
+                                    # Top 5 materiais
+                                    _mat_pico = (
+                                        _pd.groupby("material")["valor_rateado"]
+                                        .sum().sort_values(ascending=False).head(5)
+                                    )
+                                    if not _mat_pico.empty:
+                                        st.markdown("**Top materiais:**")
+                                        for _mp_mat, _mp_val in _mat_pico.items():
+                                            _mp_desc = _dp_map_all.get(str(_mp_mat), "")
+                                            _label = f"{_mp_mat}" + (f" — {_mp_desc}" if _mp_desc else "")
+                                            st.markdown(
+                                                f"&nbsp;&nbsp;• {_label}: "
+                                                f"**{_fmt_brl_contabil(_mp_val)}** "
+                                                f"({_mp_val/_p_val*100:.0f}%)"
                                             )
 
-                                        # Top 5 materiais
-                                        _mat_pico = (
-                                            _pd.groupby("material")["valor_rateado"]
-                                            .sum().sort_values(ascending=False).head(5)
-                                        )
-                                        if not _mat_pico.empty:
-                                            _desc_pico = r.get("materiais_df", pd.DataFrame())
-                                            _dp_map = dict(zip(
-                                                _desc_pico["material"].astype(str),
-                                                _desc_pico["descricao"]
-                                            )) if not _desc_pico.empty and "descricao" in _desc_pico.columns else {}
-                                            st.markdown("**Top materiais que contribuem para este mês:**")
-                                            for _mp_mat, _mp_val in _mat_pico.items():
-                                                _mp_desc = _dp_map.get(str(_mp_mat), "")
-                                                _label = f"{_mp_mat}" + (f" — {_mp_desc}" if _mp_desc else "")
-                                                st.markdown(
-                                                    f"&nbsp;&nbsp;• {_label}: "
-                                                    f"**{_fmt_brl_contabil(_mp_val)}** "
-                                                    f"({_mp_val/_p_val*100:.0f}%)"
-                                                )
-
-                                    st.divider()
+                                st.divider()
 
                     st.caption("💡 Clique em uma linha para rastrear de onde vem o desembolso daquele mês.")
                     agg_cx_fmt = _vis_cx_f.copy()
