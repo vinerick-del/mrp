@@ -514,7 +514,7 @@ if _disparar:
                     _tmp2["data_base_pagamento"] = pd.to_datetime(_tmp2["data_remessa"], errors="coerce")
                 else:
                     _tmp2["data_base_pagamento"] = pd.to_datetime(
-                        _tmp2["mes_remessa"] + "-01", format="%Y-%m-%d", errors="coerce"
+                        _tmp2["mes_remessa"] + "-15", format="%Y-%m-%d", errors="coerce"
                     )
                 if "contrato" in _tmp2.columns:
                     _tmp2["documento_referencia"] = _tmp2["contrato"].astype(str).str.strip()
@@ -531,8 +531,19 @@ if _disparar:
 
             if not df_mb51.empty:
                 _tmp3 = df_mb51.copy()
-                _tmp3["mes_pedido"]          = _tmp3["mes_entrega"]
-                _tmp3["data_base_pagamento"] = pd.to_datetime(_tmp3["mes_entrega"] + "-01", format="%Y-%m-%d", errors="coerce")
+                _tmp3["mes_pedido"] = _tmp3["mes_entrega"]
+                # Usar data real do documento MB51 se disponível; fallback dia 15 do mês
+                if "data_doc" in _tmp3.columns:
+                    _tmp3["data_base_pagamento"] = pd.to_datetime(_tmp3["data_doc"], errors="coerce")
+                    _mask_no_date = _tmp3["data_base_pagamento"].isna()
+                    _tmp3.loc[_mask_no_date, "data_base_pagamento"] = pd.to_datetime(
+                        _tmp3.loc[_mask_no_date, "mes_entrega"] + "-15",
+                        format="%Y-%m-%d", errors="coerce",
+                    )
+                else:
+                    _tmp3["data_base_pagamento"] = pd.to_datetime(
+                        _tmp3["mes_entrega"] + "-15", format="%Y-%m-%d", errors="coerce"
+                    )
                 _tmp3["documento_referencia"] = None
                 _tmp3["numero_pedido"]        = None
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
