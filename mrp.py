@@ -713,7 +713,7 @@ def ler_historico_mb51(source) -> pd.DataFrame:
     Filtro: Tipo de Movimento 101 (recebimento) e 102 (estorno).
     Movimentos 102 ficam com quantidade e valor NEGATIVOS.
 
-    Retorna DataFrame agrupado: material | mes_entrega | quantidade | valor_pedido
+    Retorna DataFrame agrupado: material | mes_entrega | numero_pedido | quantidade | valor_pedido | data_doc
     """
     df = _ler_sap_tabsep(source)
     df.columns = df.columns.str.strip()
@@ -822,7 +822,11 @@ def ler_historico_mb51(source) -> pd.DataFrame:
     # ── Agrupar por material + mês + pedido (preserva numero_pedido p/ política pag.) ─
     resultado = (
         df.groupby(["material", "mes_entrega", "numero_pedido"], as_index=False, dropna=False)
-        .agg(quantidade=("quantidade", "sum"), valor_pedido=("valor", "sum"))
+        .agg(
+            quantidade=("quantidade", "sum"),
+            valor_pedido=("valor", "sum"),
+            data_doc=("data_doc", "min"),   # data real do documento (para data_base_pagamento e mes_pedido)
+        )
     )
     resultado["quantidade"]   = resultado["quantidade"].round(3)
     resultado["valor_pedido"] = resultado["valor_pedido"].round(2)

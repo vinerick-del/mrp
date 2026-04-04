@@ -531,7 +531,16 @@ if _disparar:
 
             if not df_mb51.empty:
                 _tmp3 = df_mb51.copy()
-                _tmp3["mes_pedido"] = _tmp3["mes_entrega"]
+                # mes_pedido: mês da data real do documento MB51; fallback = mes_entrega
+                if "data_doc" in _tmp3.columns:
+                    _tmp3["mes_pedido"] = (
+                        pd.to_datetime(_tmp3["data_doc"], errors="coerce")
+                        .dt.to_period("M").astype(str)
+                    )
+                    _mask_mb51_nd = _tmp3["mes_pedido"].isna() | (_tmp3["mes_pedido"] == "NaT")
+                    _tmp3.loc[_mask_mb51_nd, "mes_pedido"] = _tmp3.loc[_mask_mb51_nd, "mes_entrega"]
+                else:
+                    _tmp3["mes_pedido"] = _tmp3["mes_entrega"]
                 # Usar data real do documento MB51 se disponível; fallback dia 15 do mês
                 if "data_doc" in _tmp3.columns:
                     _tmp3["data_base_pagamento"] = pd.to_datetime(_tmp3["data_doc"], errors="coerce")
@@ -1304,6 +1313,45 @@ if "resultado" in st.session_state:
             with _fc3:
                 _sel_prog  = st.selectbox("Programa Orçamentário", ["Todos"] + _progs_disp, key="fin_prog")
 
+            # ── Filtros adicionais: Material e Classe ABC ─────────────────────
+            _mats_fin_disp = sorted(
+                df_fin_bruto["material"].dropna().astype(str).unique().tolist()
+                if not df_fin_bruto.empty and "material" in df_fin_bruto.columns
+                else []
+            )
+            _abc_fin    = r.get("abc", pd.DataFrame())
+            _classe_map_fin = (
+                dict(zip(_abc_fin["material"].astype(str), _abc_fin["classe"]))
+                if not _abc_fin.empty and "classe" in _abc_fin.columns else {}
+            )
+            _classes_fin_disp = sorted(
+                _abc_fin["classe"].dropna().unique().tolist()
+                if not _abc_fin.empty and "classe" in _abc_fin.columns
+                else ["A", "B", "C"]
+            )
+            _ff4, _ff5 = st.columns(2)
+            with _ff4:
+                _sel_mats = st.multiselect(
+                    "Material", _mats_fin_disp, default=[],
+                    key="fin_mats", placeholder="Todos os materiais",
+                )
+            with _ff5:
+                _sel_classes = st.multiselect(
+                    "Classe ABC", _classes_fin_disp, default=[],
+                    key="fin_classes", placeholder="Todas as classes",
+                )
+
+            # ── Enriquecer com classe para filtro ─────────────────────────────
+            def _add_classe(df: pd.DataFrame) -> pd.DataFrame:
+                if df.empty or not _classe_map_fin:
+                    return df
+                out = df.copy()
+                out["_classe"] = out["material"].astype(str).map(_classe_map_fin)
+                return out
+
+            _fin_bruto_c   = _add_classe(df_fin_bruto)
+            _fluxo_bruto_c = _add_classe(df_fluxo_bruto)
+
             # ── Filtrar brutos ────────────────────────────────────────────────
             def _filtrar_fin(df: pd.DataFrame, col_mes: str) -> pd.DataFrame:
                 if df.empty:
@@ -1311,12 +1359,16 @@ if "resultado" in st.session_state:
                 out = df[df[col_mes].str[:4] == _sel_ano].copy() if col_mes in df.columns else df.copy()
                 if _sel_depto != "Todos" and "departamento" in out.columns:
                     out = out[out["departamento"] == _sel_depto]
-                if _sel_prog  != "Todos" and "programa_orcamentario" in out.columns:
+                if _sel_prog != "Todos" and "programa_orcamentario" in out.columns:
                     out = out[out["programa_orcamentario"] == _sel_prog]
+                if _sel_mats and "material" in out.columns:
+                    out = out[out["material"].astype(str).isin(_sel_mats)]
+                if _sel_classes and "_classe" in out.columns:
+                    out = out[out["_classe"].isin(_sel_classes)]
                 return out
 
-            _fin_f   = _filtrar_fin(df_fin_bruto,   "mes_pedido")
-            _fluxo_f = _filtrar_fin(df_fluxo_bruto, "mes_pagamento")
+            _fin_f   = _filtrar_fin(_fin_bruto_c,   "mes_pedido")
+            _fluxo_f = _filtrar_fin(_fluxo_bruto_c, "mes_pagamento")
 
             # ── Reconstruir pivots dinâmicos ──────────────────────────────────
             def _pivot_com_total(df: pd.DataFrame, idx: str, col_val: str) -> pd.DataFrame:
@@ -1339,9 +1391,10 @@ if "resultado" in st.session_state:
             _vis_orc_f = _pivot_com_total(_fin_f,   "mes_pedido",    "valor_rateado")
             _vis_cx_f  = _pivot_com_total(_fluxo_f, "mes_pagamento", "valor_rateado")
 
-            subtab_orc, subtab_cx = st.tabs([
+            subtab_orc, subtab_cx, subtab_ent = st.tabs([
                 "📊 Visão Orçamentária (Emissão)",
                 "💸 Visão de Caixa (Desembolso Real)",
+                "📦 Entradas Mensais",
             ])
 
             with subtab_orc:
@@ -1535,8 +1588,20 @@ if "resultado" in st.session_state:
                             else:
                                 _fluxo_trace["parcela_label"] = "-"
 
+                            # Enriquecer com descrição do material
+                            _mat_df_tr = r.get("materiais_df", pd.DataFrame())
+                            _abc_tr    = r.get("abc", pd.DataFrame())
+                            _desc_tr: dict = {}
+                            if not _mat_df_tr.empty and "descricao" in _mat_df_tr.columns:
+                                _desc_tr = dict(zip(_mat_df_tr["material"].astype(str), _mat_df_tr["descricao"]))
+                            elif not _abc_tr.empty and "descricao" in _abc_tr.columns:
+                                _desc_tr = dict(zip(_abc_tr["material"].astype(str), _abc_tr["descricao"]))
+                            _fluxo_trace["descricao"] = (
+                                _fluxo_trace["material"].astype(str).map(_desc_tr).fillna("-")
+                            )
+
                             _trace_cols = [c for c in [
-                                "origem", "material", "departamento", "programa_orcamentario",
+                                "origem", "material", "descricao", "departamento", "programa_orcamentario",
                                 "mes_emissao", "mes_entrega",
                                 "parcela_label", "prazo_dias", "mes_pagamento",
                                 "valor_pedido_total", "valor_parcela", "valor_rateado",
@@ -1546,6 +1611,7 @@ if "resultado" in st.session_state:
                                 .rename(columns={
                                     "origem"                : "Origem",
                                     "material"              : "Material",
+                                    "descricao"             : "Descrição",
                                     "departamento"          : "Departamento",
                                     "programa_orcamentario" : "Programa",
                                     "mes_emissao"           : "Mês Emissão",
@@ -1569,20 +1635,72 @@ if "resultado" in st.session_state:
                                 height=400,
                             )
 
-                    with st.expander("⚠️ Log: Documentos sem Política (Aplicado Padrão 60/90 dias)"):
-                        if log_sem_pol:
-                            df_log = (
-                                pd.DataFrame(log_sem_pol)
-                                .drop_duplicates()
-                                .reset_index(drop=True)
-                            )
-                            st.caption(f"{len(df_log)} documento(s) usaram a política padrão [60, 90] dias.")
-                            st.dataframe(
-                                df_log.style.format({"valor_pedido": _fmt_brl_contabil}, na_rep="-"),
-                                use_container_width=True,
-                            )
-                        else:
-                            st.success("Todos os documentos possuem política de pagamento cadastrada.")
+            with subtab_ent:
+                st.caption(
+                    f"Valor e quantidade de pedidos por mês de chegada ao estoque · {_sel_ano}"
+                    + (f" · Departamento: {_sel_depto}" if _sel_depto != "Todos" else "")
+                    + (f" · Programa: {_sel_prog}" if _sel_prog != "Todos" else "")
+                )
+                _ent_f = _filtrar_fin(_fin_bruto_c, "mes_entrega")
+                if _ent_f.empty:
+                    st.info("Sem dados de entradas para os filtros selecionados.")
+                else:
+                    _ent_grp = (
+                        _ent_f
+                        .groupby("mes_entrega", as_index=False)
+                        .agg(
+                            valor_total  = ("valor_rateado", "sum"),
+                            qtd_pedidos  = ("material",      "count"),
+                            qtd_materiais= ("material",      "nunique"),
+                        )
+                        .sort_values("mes_entrega")
+                    )
+                    # Gráfico
+                    _fig_ent = go.Figure(go.Bar(
+                        x=_ent_grp["mes_entrega"],
+                        y=_ent_grp["valor_total"],
+                        text=_ent_grp["valor_total"].apply(
+                            lambda v: f"R$ {v/1_000:.1f}K" if v < 1_000_000
+                            else f"R$ {v/1_000_000:.2f}M"
+                        ),
+                        textposition="outside",
+                        marker_color="#1f77b4",
+                    ))
+                    _fig_ent.update_layout(
+                        title="Entradas Mensais — Valor Total (R$)",
+                        yaxis_title="R$",
+                        height=360,
+                        margin=dict(t=50, b=40),
+                    )
+                    st.plotly_chart(_fig_ent, use_container_width=True)
+                    # Tabela
+                    _ent_tbl = _ent_grp.copy()
+                    _ent_tbl["Valor Total"] = _ent_tbl["valor_total"].apply(_fmt_brl_contabil)
+                    st.dataframe(
+                        _ent_tbl.rename(columns={
+                            "mes_entrega"   : "Mês",
+                            "Valor Total"   : "Valor Total (R$)",
+                            "qtd_pedidos"   : "Qtd. Linhas",
+                            "qtd_materiais" : "Materiais Distintos",
+                        })[["Mês", "Valor Total (R$)", "Qtd. Linhas", "Materiais Distintos"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            with st.expander("⚠️ Log: Documentos sem Política (Aplicado Padrão 60/90 dias)"):
+                if log_sem_pol:
+                    df_log = (
+                        pd.DataFrame(log_sem_pol)
+                        .drop_duplicates()
+                        .reset_index(drop=True)
+                    )
+                    st.caption(f"{len(df_log)} documento(s) usaram a política padrão [60, 90] dias.")
+                    st.dataframe(
+                        df_log.style.format({"valor_pedido": _fmt_brl_contabil}, na_rep="-"),
+                        use_container_width=True,
+                    )
+                else:
+                    st.success("Todos os documentos possuem política de pagamento cadastrada.")
 
     with tab_rup:
         st.subheader("Alertas de Ruptura de Estoque")
