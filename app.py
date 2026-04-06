@@ -2574,29 +2574,32 @@ if "resultado" in st.session_state:
                             pd.to_numeric(_aba_dfp[_col_val_dfp], errors="coerce").fillna(0).sum()
                             if _col_val_dfp in _aba_dfp.columns else 0.0
                         )
-                        _tot_rat   = _res_dfp["Valor Rateado (R$)"].sum()
-                        _n_sem_mb  = (_res_dfp["Material"] == "NAO_IDENTIFICADO").sum()
-                        _n_sem_rat = (_res_dfp["Departamento"] == "NAO_DEFINIDO").sum()
-                        # Divergência entre total original e total rateado
-                        _divergencia = abs(_tot_orig - _tot_rat)
+                        _tot_rat      = _res_dfp["Valor Rateado (R$)"].sum()
+                        _tot_nao_rat  = _res_dfp.loc[
+                            _res_dfp["Departamento"] == "NAO_DEFINIDO", "Valor Rateado (R$)"
+                        ].sum()
+                        _tot_rat_ok   = _tot_rat - _tot_nao_rat
+                        _n_sem_mb     = (_res_dfp["Material"] == "NAO_IDENTIFICADO").sum()
+                        _n_sem_rat    = (_res_dfp["Departamento"] == "NAO_DEFINIDO").sum()
 
-                        _dc1, _dc2, _dc3, _dc4 = st.columns(4)
-                        _dc1.metric("Linhas DFP originais", len(_aba_dfp))
-                        _dc2.metric("Linhas após rateio",   len(_res_dfp),
-                                    help="Expandido por material (MB51) × departamento/programa")
-                        _dc3.metric("Total DFP (R$)",       _fmt_brl_contabil(_tot_orig))
-                        _dc4.metric("Total Rateado (R$)",   _fmt_brl_contabil(_tot_rat),
-                                    delta=f"Δ {_fmt_brl_contabil(_divergencia)}" if _divergencia > 0.01 else "✓ Balanceado")
+                        _dc1, _dc2, _dc3 = st.columns(3)
+                        _dc1.metric("Total DFP (R$)",          _fmt_brl_contabil(_tot_orig))
+                        _dc2.metric("✅ Rateado (R$)",          _fmt_brl_contabil(_tot_rat_ok),
+                                    f"{_tot_rat_ok/_tot_orig*100:.1f}% do total" if _tot_orig else "")
+                        _dc3.metric("⚠️ Não Rateado (R$)",      _fmt_brl_contabil(_tot_nao_rat),
+                                    f"{_tot_nao_rat/_tot_orig*100:.1f}% do total" if _tot_orig else "",
+                                    delta_color="inverse")
 
-                        if _n_sem_mb > 0:
+                        if _tot_nao_rat > 0:
                             st.warning(
-                                f"⚠️ **{_n_sem_mb}** linha(s) sem material identificado em MB51 "
-                                f"(PO não encontrado no MB51 carregado)."
+                                f"**{_fmt_brl_contabil(_tot_nao_rat)}** ({_tot_nao_rat/_tot_orig*100:.1f}% do total DFP) "
+                                f"não foram rateados — material sem departamento/programa definido.  \n"
+                                f"Configure o rateio na aba **⚠️ Rateio Pendente** para alocar esses valores."
                             )
-                        if _n_sem_rat > 0:
-                            st.warning(
-                                f"⚠️ **{_n_sem_rat}** linha(s) com material sem departamento no rateio "
-                                f"(NAO_DEFINIDO). Configure na aba **⚠️ Rateio Pendente**."
+                        if _n_sem_mb > 0:
+                            st.info(
+                                f"ℹ️ **{_n_sem_mb}** linha(s) sem material identificado em MB51 "
+                                f"(PO não encontrado)."
                             )
 
                         if _divergencia > 0.01:
