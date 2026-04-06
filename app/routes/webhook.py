@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from config import WEBHOOK_SECRET
 from services.signal_service import process_signal
 from services.telegram_service import send_telegram_message
+from services.risk_management import validate_risk
 
 webhook_router = APIRouter(prefix="/webhook", tags=["webhook"])
 
@@ -27,8 +28,9 @@ async def receive_signal(payload: SignalPayload):
 
     - Valida WEBHOOK_SECRET
     - Processa o sinal com timestamp
-    - Envia notificação via Telegram
-    - Retorna confirmação
+    - Valida risco antes de enviar
+    - Se aprovado: envia para Telegram
+    - Se bloqueado: não envia e retorna motivo
     """
 
     # Validar secret
@@ -46,6 +48,18 @@ async def receive_signal(payload: SignalPayload):
         preco=payload.preco
     )
 
+    # Validar risco
+    risk_validation = validate_risk(signal)
+
+    # Se bloqueado por risco
+    if not risk_validation["approved"]:
+        print(f"⚠️ Sinal bloqueado: {risk_validation['reason']}")
+        return {
+            "status": "blocked",
+            "reason": risk_validation["reason"],
+            "signal": signal
+        }
+
     # Montar mensagem formatada
     message = f"""🚀 <b>{signal['tipo']}</b>
 Par: <b>{signal['par']}</b>
@@ -58,7 +72,8 @@ Horário: <b>{signal['timestamp']}</b>"""
 
     # Retornar confirmação
     return {
-        "status": "sinal recebido",
+        "status": "sent",
+        "reason": risk_validation["reason"],
         "signal": signal,
         "telegram": telegram_result
     }
