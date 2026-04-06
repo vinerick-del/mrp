@@ -5,6 +5,8 @@ Rotas de Webhook - Recebimento de Sinais de Trading
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from config import WEBHOOK_SECRET
+from services.signal_service import process_signal
+from services.telegram_service import send_telegram_message
 
 webhook_router = APIRouter(prefix="/webhook", tags=["webhook"])
 
@@ -24,8 +26,9 @@ async def receive_signal(payload: SignalPayload):
     Receber sinal de trading do TradingView
 
     - Valida WEBHOOK_SECRET
-    - Se inválido retorna 401
-    - Se válido retorna confirmação de recebimento
+    - Processa o sinal com timestamp
+    - Envia notificação via Telegram
+    - Retorna confirmação
     """
 
     # Validar secret
@@ -35,11 +38,27 @@ async def receive_signal(payload: SignalPayload):
             detail="Secret inválido"
         )
 
-    # Sinal válido recebido
+    # Processar sinal
+    signal = process_signal(
+        par=payload.par,
+        tipo=payload.tipo,
+        timeframe=payload.timeframe,
+        preco=payload.preco
+    )
+
+    # Montar mensagem formatada
+    message = f"""🚀 <b>{signal['tipo']}</b>
+Par: <b>{signal['par']}</b>
+Timeframe: <b>{signal['timeframe']}</b>
+Preço: <b>{signal['preco']}</b>
+Horário: <b>{signal['timestamp']}</b>"""
+
+    # Enviar via Telegram
+    telegram_result = send_telegram_message(message)
+
+    # Retornar confirmação
     return {
         "status": "sinal recebido",
-        "par": payload.par,
-        "tipo": payload.tipo,
-        "timeframe": payload.timeframe,
-        "preco": payload.preco
+        "signal": signal,
+        "telegram": telegram_result
     }
