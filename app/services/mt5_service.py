@@ -7,10 +7,11 @@ from typing import Dict, Any, Optional, Set
 from datetime import datetime, timedelta
 import MetaTrader5 as mt5
 from config import RISK_PER_TRADE
-from services.performance_service import log_trade, get_performance_summary
+from services.performance_service import log_trade, get_performance_summary, get_symbol_ranking
 
 # Configurações de ordem
 DEFAULT_VOLUME = 0.01  # Lote padrão (mínimo)
+MAX_VOLUME = 0.05  # Lote máximo
 SL_PIPS = 20  # Stop Loss em pips
 TP_PIPS = 40  # Take Profit em pips (RR 1:2)
 
@@ -205,12 +206,13 @@ def calculate_position_size(sl_pips: float, symbol: str) -> Optional[float]:
         return DEFAULT_VOLUME
 
 
-def calculate_dynamic_lot(performance: Dict[str, Any]) -> float:
+def calculate_dynamic_lot(performance: Dict[str, Any], symbol: str = None) -> float:
     """
-    Calcular tamanho do lote dinamicamente baseado em performance
+    Calcular tamanho do lote dinamicamente baseado em performance e ranking
 
     Args:
         performance: Dicionário com estatísticas de performance
+        symbol: Símbolo atual (opcional, para ranking)
 
     Returns:
         Tamanho do lote ajustado
@@ -239,8 +241,33 @@ def calculate_dynamic_lot(performance: Dict[str, Any]) -> float:
             # Drawdown significativo: reduzir pela metade
             adjusted_lot = adjusted_lot * 0.5
 
-        # Garantir lote mínimo
-        adjusted_lot = max(adjusted_lot, base_lot)
+        # Integração com ranking de ativos (auto-alocação)
+        if symbol:
+            ranking = get_symbol_ranking()
+            if ranking:
+                # Encontrar posição do símbolo no ranking
+                symbol_position = None
+                for idx, asset in enumerate(ranking):
+                    if asset["symbol"].upper() == symbol.upper():
+                        symbol_position = idx
+                        break
+
+                if symbol_position is not None:
+                    total_symbols = len(ranking)
+
+                    # TOP 1: aumentar lote +100%
+                    if symbol_position == 0:
+                        adjusted_lot = adjusted_lot * 2.0
+                    # TOP 2: aumentar lote +50%
+                    elif symbol_position == 1:
+                        adjusted_lot = adjusted_lot * 1.5
+                    # ÚLTIMO: reduzir lote -50%
+                    elif symbol_position == total_symbols - 1:
+                        adjusted_lot = adjusted_lot * 0.5
+
+        # Garantir lote dentro dos limites
+        adjusted_lot = max(adjusted_lot, DEFAULT_VOLUME)
+        adjusted_lot = min(adjusted_lot, MAX_VOLUME)
 
         # Arredondar para múltiplos de 0.01
         adjusted_lot = round(adjusted_lot, 2)
@@ -293,9 +320,9 @@ def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
         # Calcular SL e TP
         sl_tp = calculate_sl_tp(signal_type, price, symbol_info["point"])
 
-        # Calcular tamanho da posição dinâmico baseado em performance
+        # Calcular tamanho da posição dinâmico baseado em performance e ranking
         performance = get_performance_summary()
-        position_size = calculate_dynamic_lot(performance)
+        position_size = calculate_dynamic_lot(performance, symbol)
 
         # Tipo de ordem
         order_type = mt5.ORDER_TYPE_BUY if signal_type == "BUY" else mt5.ORDER_TYPE_SELL
