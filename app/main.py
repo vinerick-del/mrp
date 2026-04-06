@@ -25,9 +25,9 @@ async def health_check():
     )
 
 
-# Placeholder para rotas futuras
-# from routes.webhook import webhook_router
-# app.include_router(webhook_router)
+# Incluir rotas
+from routes.webhook import webhook_router
+app.include_router(webhook_router)
 
 
 if __name__ == "__main__":
