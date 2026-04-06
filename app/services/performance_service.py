@@ -193,3 +193,95 @@ def reset_history() -> Dict[str, Any]:
         "status": "sucesso",
         "message": "Histórico resetado"
     }
+
+
+def get_symbol_ranking() -> List[Dict[str, Any]]:
+    """
+    Obter ranking de ativos baseado em performance
+
+    Calcula score = (win_rate * 0.6) + (profit * 0.4)
+    Ordena do melhor para o pior
+
+    Returns:
+        Lista de ativos ordenada por performance
+    """
+    if len(trades_history) == 0:
+        return []
+
+    # Agrupar trades por símbolo
+    symbols_data = {}
+
+    for trade in trades_history:
+        symbol = trade["par"]
+        if symbol not in symbols_data:
+            symbols_data[symbol] = {
+                "trades": [],
+                "wins": 0,
+                "losses": 0,
+                "profit": 0.0
+            }
+
+        symbols_data[symbol]["trades"].append(trade)
+        if trade["result"] == "WIN":
+            symbols_data[symbol]["wins"] += 1
+        elif trade["result"] == "LOSS":
+            symbols_data[symbol]["losses"] += 1
+
+        symbols_data[symbol]["profit"] += trade["profit_loss"]
+
+    # Calcular ranking
+    ranking = []
+
+    for symbol, data in symbols_data.items():
+        total_trades = len(data["trades"])
+        if total_trades == 0:
+            continue
+
+        win_rate = (data["wins"] / total_trades * 100)
+        profit = data["profit"]
+
+        # Score normalizado
+        # Win rate: 0-100, normalizamos para 0-1
+        # Profit: pode ser negativo, normalizamos pela magnitude
+        win_rate_normalized = win_rate / 100.0
+        profit_normalized = min(profit / 1000.0, 1.0) if profit >= 0 else max(profit / 1000.0, -1.0)
+
+        score = (win_rate_normalized * 0.6) + (profit_normalized * 0.4)
+        score = max(0, min(1.0, score))  # Limitar entre 0 e 1
+
+        ranking.append({
+            "symbol": symbol,
+            "win_rate": round(win_rate, 2),
+            "profit": round(profit, 2),
+            "trades": total_trades,
+            "wins": data["wins"],
+            "losses": data["losses"],
+            "score": round(score, 2)
+        })
+
+    # Ordenar do melhor para o pior
+    ranking.sort(key=lambda x: x["score"], reverse=True)
+
+    return ranking
+
+
+def get_best_symbol() -> Optional[Dict[str, Any]]:
+    """
+    Obter ativo com melhor performance
+
+    Returns:
+        Dicionário com melhor ativo ou None
+    """
+    ranking = get_symbol_ranking()
+    return ranking[0] if ranking else None
+
+
+def get_worst_symbol() -> Optional[Dict[str, Any]]:
+    """
+    Obter ativo com pior performance
+
+    Returns:
+        Dicionário com pior ativo ou None
+    """
+    ranking = get_symbol_ranking()
+    return ranking[-1] if ranking else None
