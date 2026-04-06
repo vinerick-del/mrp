@@ -1,13 +1,14 @@
 """
 Serviço de Integração com MetaTrader 5
-Execução automática de ordens
+Execução automática de ordens com cálculo de risco
 """
 
 from typing import Dict, Any, Optional
 import MetaTrader5 as mt5
+from config import RISK_PER_TRADE
 
 # Configurações de ordem
-DEFAULT_VOLUME = 0.01  # Lote padrão
+DEFAULT_VOLUME = 0.01  # Lote padrão (mínimo)
 SL_PIPS = 20  # Stop Loss em pips
 TP_PIPS = 40  # Take Profit em pips (RR 1:2)
 
@@ -144,6 +145,61 @@ def calculate_sl_tp(signal_type: str, current_price: float, point: float) -> Dic
     }
 
 
+def calculate_position_size(sl_pips: float, symbol: str) -> Optional[float]:
+    """
+    Calcular tamanho da posição baseado no risco por trade
+
+    Args:
+        sl_pips: Stop Loss em pips
+        symbol: Par de moedas
+
+    Returns:
+        Tamanho do lote calculado ou None se erro
+    """
+    try:
+        # Obter saldo da conta
+        account_info = mt5.account_info()
+        if account_info is None:
+            print("Erro ao obter informações da conta")
+            return None
+
+        balance = account_info.balance
+
+        # Calcular risco em reais
+        risk_amount = balance * (RISK_PER_TRADE / 100)
+
+        # Obter informações do símbolo
+        symbol_info = get_symbol_info(symbol)
+        if symbol_info is None:
+            return None
+
+        # Valor por pip
+        point = symbol_info["point"]
+        bid = symbol_info["bid"]
+
+        # Para Forex, valor por pip = point * 10000
+        # Ajustar conforme necessário para outros ativos
+        value_per_pip = point * 10000 * bid
+
+        # Calcular lote
+        if value_per_pip <= 0:
+            return DEFAULT_VOLUME
+
+        lot = risk_amount / (sl_pips * value_per_pip)
+
+        # Respeitar lote mínimo
+        lot = max(lot, DEFAULT_VOLUME)
+
+        # Arredondar para múltiplos de 0.01
+        lot = round(lot, 2)
+
+        return lot
+
+    except Exception as e:
+        print(f"Erro ao calcular tamanho da posição: {str(e)}")
+        return DEFAULT_VOLUME
+
+
 def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enviar ordem ao MetaTrader 5
@@ -185,6 +241,11 @@ def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
         # Calcular SL e TP
         sl_tp = calculate_sl_tp(signal_type, price, symbol_info["point"])
 
+        # Calcular tamanho da posição baseado em risco
+        position_size = calculate_position_size(SL_PIPS, symbol)
+        if position_size is None:
+            position_size = DEFAULT_VOLUME
+
         # Tipo de ordem
         order_type = mt5.ORDER_TYPE_BUY if signal_type == "BUY" else mt5.ORDER_TYPE_SELL
 
@@ -192,7 +253,7 @@ def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
-            "volume": DEFAULT_VOLUME,
+            "volume": position_size,
             "type": order_type,
             "price": price,
             "sl": sl_tp["sl"],
@@ -221,7 +282,7 @@ def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
             "price": price,
             "sl": sl_tp["sl"],
             "tp": sl_tp["tp"],
-            "volume": DEFAULT_VOLUME
+            "volume": position_size
         }
 
     except Exception as e:
