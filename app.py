@@ -2567,16 +2567,26 @@ if "resultado" in st.session_state:
                     if _res_dfp.empty:
                         st.warning("Nenhuma linha gerada. Verifique os dados das abas.")
                     else:
-                        _tot_orig  = _res_dfp["Valor Original (R$)"].sum()
+                        # Total original = soma do arquivo DFP ANTES do join
+                        # (Valor Original em _res_dfp é repetido por linha de rateio → não somar)
+                        _col_val_dfp = "Mont.em moeda AAF a controlar contra orç"
+                        _tot_orig = (
+                            pd.to_numeric(_aba_dfp[_col_val_dfp], errors="coerce").fillna(0).sum()
+                            if _col_val_dfp in _aba_dfp.columns else 0.0
+                        )
                         _tot_rat   = _res_dfp["Valor Rateado (R$)"].sum()
                         _n_sem_mb  = (_res_dfp["Material"] == "NAO_IDENTIFICADO").sum()
                         _n_sem_rat = (_res_dfp["Departamento"] == "NAO_DEFINIDO").sum()
+                        # Divergência entre total original e total rateado
+                        _divergencia = abs(_tot_orig - _tot_rat)
 
                         _dc1, _dc2, _dc3, _dc4 = st.columns(4)
-                        _dc1.metric("Linhas DFP",         len(_aba_dfp))
-                        _dc2.metric("Linhas Rateadas",    len(_res_dfp))
-                        _dc3.metric("Total DFP (R$)",     _fmt_brl_contabil(_tot_orig))
-                        _dc4.metric("Total Rateado (R$)", _fmt_brl_contabil(_tot_rat))
+                        _dc1.metric("Linhas DFP originais", len(_aba_dfp))
+                        _dc2.metric("Linhas após rateio",   len(_res_dfp),
+                                    help="Expandido por material (MB51) × departamento/programa")
+                        _dc3.metric("Total DFP (R$)",       _fmt_brl_contabil(_tot_orig))
+                        _dc4.metric("Total Rateado (R$)",   _fmt_brl_contabil(_tot_rat),
+                                    delta=f"Δ {_fmt_brl_contabil(_divergencia)}" if _divergencia > 0.01 else "✓ Balanceado")
 
                         if _n_sem_mb > 0:
                             st.warning(
@@ -2589,6 +2599,13 @@ if "resultado" in st.session_state:
                                 f"(NAO_DEFINIDO). Configure na aba **⚠️ Rateio Pendente**."
                             )
 
+                        if _divergencia > 0.01:
+                            st.info(
+                                f"ℹ️ **Total DFP ≠ Total Rateado** (Δ {_fmt_brl_contabil(_divergencia)}): "
+                                f"materiais sem rateio configurado recebem departamento NAO_DEFINIDO mas o "
+                                f"valor é preservado. Verifique os itens destacados abaixo."
+                            )
+
                         with st.expander("📊 Resumo por Departamento / Programa Orçamentário", expanded=True):
                             _resumo_dfp = (
                                 _res_dfp
@@ -2596,9 +2613,9 @@ if "resultado" in st.session_state:
                                 .sum()
                                 .sort_values("Valor Rateado (R$)", ascending=False)
                             )
+                            _tot_rat_pos = _tot_rat if _tot_rat > 0 else 1
                             _resumo_dfp["% do Total"] = (
-                                (_resumo_dfp["Valor Rateado (R$)"] / _tot_rat * 100)
-                                .div(_tot_rat if _tot_rat > 0 else 1).mul(100).round(1).astype(str) + "%"
+                                (_resumo_dfp["Valor Rateado (R$)"] / _tot_rat_pos * 100).round(1).astype(str) + "%"
                             )
                             _resumo_dfp["Valor Rateado (R$)"] = _resumo_dfp["Valor Rateado (R$)"].apply(_fmt_brl_contabil)
                             st.dataframe(_resumo_dfp, use_container_width=True, hide_index=True)
