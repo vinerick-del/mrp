@@ -287,6 +287,117 @@ def _calcular_alertas(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPER: ratear relatório DFP por material (MB51) e departamento (rateio cfg)
+# ─────────────────────────────────────────────────────────────────────────────
+def _processar_rateio_dfp(
+    dfp: pd.DataFrame,
+    mb51: pd.DataFrame,
+    rateio_cfg: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Rateia o relatório DFP financeiro por material e departamento/programa.
+
+    Passos:
+    1. Agrupa MB51 por (Pedido, Material) → peso proporcional ao Montante em MI.
+    2. Junta DFP com MB51 pelo nº de PO (Nº do documento precedente = Pedido).
+    3. Valor por material = Valor DFP × peso do material no PO.
+    4. Junta com rateio_cfg (material → departamento + programa + proporcao).
+    5. Valor rateado = Valor por material × proporcao.
+
+    Retorna uma linha por (DFP row × material × regra de rateio).
+    """
+    if dfp.empty:
+        return pd.DataFrame()
+
+    dfp  = dfp.copy()
+    mb51 = mb51.copy() if not mb51.empty else pd.DataFrame()
+
+    # ── Normalizar MB51 ──────────────────────────────────────────────────────
+    _mb51_ok = not mb51.empty
+    if _mb51_ok:
+        mb51["Pedido"]        = pd.to_numeric(mb51["Pedido"], errors="coerce")
+        mb51["Montante em MI"] = pd.to_numeric(mb51.get("Montante em MI", 0), errors="coerce").fillna(0)
+        mb51["Quantidade"]    = pd.to_numeric(mb51.get("Quantidade", 0),    errors="coerce").fillna(0)
+        mb51["Material"]      = mb51["Material"].astype(str).str.strip()
+
+        # Agrega por (Pedido, Material): soma montante e quantidade
+        mb51_agg = (
+            mb51.groupby(["Pedido", "Material"], as_index=False)
+            .agg(
+                _descricao     =("Texto breve material", "first"),
+                _montante_mat  =("Montante em MI", "sum"),
+                _qtd_mat       =("Quantidade",     "sum"),
+            )
+        )
+        # Peso = montante do material / total do PO; fallback = 1/n_materiais
+        mb51_agg["_mont_po"] = mb51_agg.groupby("Pedido")["_montante_mat"].transform("sum")
+        mb51_agg["_n_mat"]   = mb51_agg.groupby("Pedido")["Material"].transform("count")
+        mb51_agg["_peso"] = (
+            (mb51_agg["_montante_mat"] / mb51_agg["_mont_po"].replace(0, pd.NA))
+            .fillna(1.0 / mb51_agg["_n_mat"])
+        )
+    else:
+        mb51_agg = pd.DataFrame(columns=["Pedido", "Material", "_descricao", "_peso"])
+
+    # ── Normalizar DFP ───────────────────────────────────────────────────────
+    col_po  = "Nº do documento precedente"
+    col_val = "Mont.em moeda AAF a controlar contra orç"
+
+    dfp[col_po]  = pd.to_numeric(dfp[col_po],  errors="coerce")
+    dfp[col_val] = pd.to_numeric(dfp[col_val], errors="coerce").fillna(0)
+
+    # ── Join DFP × MB51 ──────────────────────────────────────────────────────
+    merged = dfp.merge(
+        mb51_agg[["Pedido", "Material", "_descricao", "_peso"]],
+        left_on=col_po, right_on="Pedido",
+        how="left",
+    )
+    merged["Material"]    = merged["Material"].fillna("NAO_IDENTIFICADO")
+    merged["_descricao"]  = merged["_descricao"].fillna("Material não identificado em MB51")
+    merged["_peso"]       = merged["_peso"].fillna(1.0)
+    merged["_val_mat"]    = merged[col_val] * merged["_peso"]
+
+    # ── Join com rateio ──────────────────────────────────────────────────────
+    if not rateio_cfg.empty:
+        _rc = rateio_cfg.copy()
+        _rc["material"] = _rc["material"].astype(str).str.strip()
+        merged = merged.merge(
+            _rc.rename(columns={"material": "Material"}),
+            on="Material", how="left",
+        )
+    else:
+        merged["departamento"]          = pd.NA
+        merged["programa_orcamentario"] = pd.NA
+        merged["proporcao"]             = 1.0
+
+    merged["departamento"]          = merged["departamento"].fillna("NAO_DEFINIDO")
+    merged["programa_orcamentario"] = merged["programa_orcamentario"].fillna("NAO_DEFINIDO")
+    merged["proporcao"]             = merged["proporcao"].fillna(1.0)
+    merged["_valor_rateado"]        = merged["_val_mat"] * merged["proporcao"]
+
+    # ── Montar saída limpa ───────────────────────────────────────────────────
+    _out = pd.DataFrame({
+        "Exercício"          : merged.get("Exercício do nº doc.FI"),
+        "Período"            : merged.get("Período"),
+        "Data"               : pd.to_datetime(merged.get("Data de lançamento"), errors="coerce").dt.strftime("%d/%m/%Y"),
+        "Fornecedor"         : merged.get("Nome 1"),
+        "Pedido"             : merged[col_po].astype("Int64"),
+        "Contrato"           : merged.get("Contrato básico"),
+        "Referência"         : merged.get("Referência"),
+        "Material"           : merged["Material"],
+        "Descrição"          : merged["_descricao"],
+        "Departamento"       : merged["departamento"],
+        "Prog. Orçamentário" : merged["programa_orcamentario"],
+        "Valor Original (R$)": merged[col_val],
+        "Peso Material %"    : (merged["_peso"] * 100).round(1),
+        "Valor p/ Material"  : merged["_val_mat"].round(2),
+        "Proporção Rateio %" : (merged["proporcao"] * 100).round(1),
+        "Valor Rateado (R$)" : merged["_valor_rateado"].round(2),
+    })
+    return _out.reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPER: classificar pedidos MRP por cobertura de contrato
 # ─────────────────────────────────────────────────────────────────────────────
 def _classificar_contratos_mrp(
@@ -865,7 +976,7 @@ if "resultado" in st.session_state:
     st.divider()
 
     # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend = st.tabs([
+    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend, tab_dfp = st.tabs([
         "📊 MRP Projetado",
         "📅 Projeção de Estoque",
         "🛒 Pedidos a Gerar",
@@ -874,6 +985,7 @@ if "resultado" in st.session_state:
         "📋 Saldo de Contrato",
         "📂 Rateio",
         "⚠️ Rateio Pendente",
+        "🏦 Rateio DFP",
     ])
 
     with tab_mrp:
@@ -2373,6 +2485,151 @@ if "resultado" in st.session_state:
                         st.rerun()
             except Exception as _e_lote:
                 st.error(f"Erro ao ler arquivo: {_e_lote}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_dfp:
+        st.subheader("Rateio DFP — Alocação Financeira por Material e Departamento")
+        st.caption(
+            "Carregue o Excel exportado do SAP com as abas **'relatório DFP'** e **'MB51'**. "
+            "O valor financeiro de cada linha DFP é identificado pelo material via MB51 e "
+            "rateado pelos departamentos/programas conforme o rateio configurado."
+        )
+
+        _f_dfp = st.file_uploader(
+            "📂 Carregar Excel DFP (abas: 'relatório DFP' + 'MB51')",
+            type=["xlsx"],
+            key="up_dfp_excel",
+            help="Excel SAP com as duas abas obrigatórias",
+        )
+
+        if _f_dfp is not None:
+            try:
+                _wb_dfp = pd.read_excel(_f_dfp, sheet_name=None, engine="openpyxl")
+                _aba_dfp = None
+                _aba_mb  = None
+                for _sn in _wb_dfp:
+                    _snl = _sn.strip().lower()
+                    if "dfp" in _snl or "relatório" in _snl or "relatorio" in _snl:
+                        _aba_dfp = _wb_dfp[_sn]
+                    elif "mb51" in _snl or "mb 51" in _snl:
+                        _aba_mb  = _wb_dfp[_sn]
+
+                if _aba_dfp is None or _aba_mb is None:
+                    st.error(
+                        f"Não encontrei as abas esperadas.  \n"
+                        f"Abas encontradas: **{list(_wb_dfp.keys())}**  \n"
+                        f"O Excel precisa ter uma aba com 'DFP' ou 'relatório' e outra com 'MB51'."
+                    )
+                else:
+                    # ── Carregar rateio configurado ───────────────────────────
+                    _rateio_base_p   = os.path.join(DIR_DADOS, "rateio_base.csv")
+                    _rateio_manual_p = os.path.join(DIR_DADOS, "rateio_manual.csv")
+                    _rateio_cfg = pd.DataFrame()
+
+                    if os.path.exists(_rateio_base_p):
+                        _sep_rb = ";" if ";" in open(_rateio_base_p).read(300) else ","
+                        _rateio_cfg = pd.read_csv(_rateio_base_p, sep=_sep_rb, dtype={"material": str})
+
+                    if os.path.exists(_rateio_manual_p):
+                        _rm = pd.read_csv(_rateio_manual_p, sep=";", dtype={"material": str})
+                        if not _rm.empty and "material" in _rm.columns:
+                            _rm_mats = set(_rm["material"].astype(str).str.strip().unique())
+                            _rc_base = _rateio_cfg[
+                                ~_rateio_cfg["material"].astype(str).str.strip().isin(_rm_mats)
+                            ] if not _rateio_cfg.empty else pd.DataFrame()
+                            _rateio_cfg = pd.concat(
+                                [_rc_base, _rm[["material","departamento","programa_orcamentario","proporcao"]]],
+                                ignore_index=True,
+                            )
+
+                    # ── Processar ─────────────────────────────────────────────
+                    _res_dfp = _processar_rateio_dfp(_aba_dfp, _aba_mb, _rateio_cfg)
+
+                    if _res_dfp.empty:
+                        st.warning("Nenhuma linha gerada. Verifique os dados das abas.")
+                    else:
+                        _tot_orig  = _res_dfp["Valor Original (R$)"].sum()
+                        _tot_rat   = _res_dfp["Valor Rateado (R$)"].sum()
+                        _n_sem_mb  = (_res_dfp["Material"] == "NAO_IDENTIFICADO").sum()
+                        _n_sem_rat = (_res_dfp["Departamento"] == "NAO_DEFINIDO").sum()
+
+                        _dc1, _dc2, _dc3, _dc4 = st.columns(4)
+                        _dc1.metric("Linhas DFP",         len(_aba_dfp))
+                        _dc2.metric("Linhas Rateadas",    len(_res_dfp))
+                        _dc3.metric("Total DFP (R$)",     _fmt_brl_contabil(_tot_orig))
+                        _dc4.metric("Total Rateado (R$)", _fmt_brl_contabil(_tot_rat))
+
+                        if _n_sem_mb > 0:
+                            st.warning(
+                                f"⚠️ **{_n_sem_mb}** linha(s) sem material identificado em MB51 "
+                                f"(PO não encontrado no MB51 carregado)."
+                            )
+                        if _n_sem_rat > 0:
+                            st.warning(
+                                f"⚠️ **{_n_sem_rat}** linha(s) com material sem departamento no rateio "
+                                f"(NAO_DEFINIDO). Configure na aba **⚠️ Rateio Pendente**."
+                            )
+
+                        with st.expander("📊 Resumo por Departamento / Programa Orçamentário", expanded=True):
+                            _resumo_dfp = (
+                                _res_dfp
+                                .groupby(["Departamento", "Prog. Orçamentário"], as_index=False)["Valor Rateado (R$)"]
+                                .sum()
+                                .sort_values("Valor Rateado (R$)", ascending=False)
+                            )
+                            _resumo_dfp["% do Total"] = (
+                                (_resumo_dfp["Valor Rateado (R$)"] / _tot_rat * 100)
+                                .where(_tot_rat > 0, 0).round(1).astype(str) + "%"
+                            )
+                            _resumo_dfp["Valor Rateado (R$)"] = _resumo_dfp["Valor Rateado (R$)"].apply(_fmt_brl_contabil)
+                            st.dataframe(_resumo_dfp, use_container_width=True, hide_index=True)
+
+                        st.markdown("#### Detalhamento linha a linha")
+                        _cols_det = [
+                            "Exercício", "Período", "Data", "Fornecedor",
+                            "Pedido", "Contrato", "Referência",
+                            "Material", "Descrição",
+                            "Departamento", "Prog. Orçamentário",
+                            "Valor Original (R$)", "Peso Material %",
+                            "Valor p/ Material", "Proporção Rateio %", "Valor Rateado (R$)",
+                        ]
+                        _cols_det = [_c for _c in _cols_det if _c in _res_dfp.columns]
+                        _det_fmt = _res_dfp[_cols_det].copy()
+                        for _fc in ["Valor Original (R$)", "Valor p/ Material", "Valor Rateado (R$)"]:
+                            if _fc in _det_fmt.columns:
+                                _det_fmt[_fc] = _det_fmt[_fc].apply(_fmt_brl_contabil)
+                        st.dataframe(_det_fmt, use_container_width=True, height=440, hide_index=True)
+
+                        try:
+                            import io as _io_dfp
+                            _buf_dfp = _io_dfp.BytesIO()
+                            with pd.ExcelWriter(_buf_dfp, engine="openpyxl") as _wr_dfp:
+                                _res_dfp.to_excel(_wr_dfp, sheet_name="Rateio DFP", index=False)
+                                (
+                                    _res_dfp
+                                    .groupby(["Departamento","Prog. Orçamentário"], as_index=False)["Valor Rateado (R$)"]
+                                    .sum().sort_values("Valor Rateado (R$)", ascending=False)
+                                    .to_excel(_wr_dfp, sheet_name="Resumo", index=False)
+                                )
+                            st.download_button(
+                                label="⬇ Baixar Rateio DFP (Excel)",
+                                data=_buf_dfp.getvalue(),
+                                file_name="rateio_dfp.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                            )
+                        except ImportError:
+                            st.info("openpyxl não instalado — execute: pip install openpyxl")
+
+            except Exception as _e_dfp:
+                st.error(f"Erro ao processar arquivo DFP: {_e_dfp}")
+                st.exception(_e_dfp)
+        else:
+            st.info(
+                "Carregue o Excel com as abas **'relatório DFP'** e **'MB51'** para iniciar o rateio.  \n"
+                "O rateio por departamento/programa usará a mesma configuração do MRP "
+                "(rateio_base.csv + rateio_manual.csv)."
+            )
 
     # ── Download Excel ────────────────────────────────────────────────────────
     st.divider()
