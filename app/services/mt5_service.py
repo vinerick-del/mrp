@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, Set
 from datetime import datetime, timedelta
 import MetaTrader5 as mt5
 from config import RISK_PER_TRADE
-from services.performance_service import log_trade
+from services.performance_service import log_trade, get_performance_summary
 
 # Configurações de ordem
 DEFAULT_VOLUME = 0.01  # Lote padrão (mínimo)
@@ -205,6 +205,53 @@ def calculate_position_size(sl_pips: float, symbol: str) -> Optional[float]:
         return DEFAULT_VOLUME
 
 
+def calculate_dynamic_lot(performance: Dict[str, Any]) -> float:
+    """
+    Calcular tamanho do lote dinamicamente baseado em performance
+
+    Args:
+        performance: Dicionário com estatísticas de performance
+
+    Returns:
+        Tamanho do lote ajustado
+    """
+    try:
+        base_lot = DEFAULT_VOLUME  # 0.01
+        win_rate = performance.get("win_rate", 50.0)
+        drawdown = performance.get("drawdown", 0.0)
+
+        # Ajuste baseado em win_rate
+        if win_rate > 60.0:
+            # Win rate alto: aumentar lote em +50%
+            adjusted_lot = base_lot * 1.5  # 0.015
+        elif 40.0 <= win_rate <= 60.0:
+            # Win rate normal: manter lote base
+            adjusted_lot = base_lot  # 0.01
+        else:  # win_rate < 40.0
+            # Win rate baixo: reduzir lote em -50%
+            adjusted_lot = base_lot * 0.5  # 0.005
+
+        # Proteção por drawdown
+        if drawdown >= 10.0:
+            # Drawdown crítico: lote mínimo
+            adjusted_lot = base_lot  # 0.01
+        elif drawdown >= 5.0:
+            # Drawdown significativo: reduzir pela metade
+            adjusted_lot = adjusted_lot * 0.5
+
+        # Garantir lote mínimo
+        adjusted_lot = max(adjusted_lot, base_lot)
+
+        # Arredondar para múltiplos de 0.01
+        adjusted_lot = round(adjusted_lot, 2)
+
+        return adjusted_lot
+
+    except Exception as e:
+        print(f"Erro ao calcular lote dinâmico: {str(e)}")
+        return DEFAULT_VOLUME
+
+
 def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enviar ordem ao MetaTrader 5
@@ -246,10 +293,9 @@ def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
         # Calcular SL e TP
         sl_tp = calculate_sl_tp(signal_type, price, symbol_info["point"])
 
-        # Calcular tamanho da posição baseado em risco
-        position_size = calculate_position_size(SL_PIPS, symbol)
-        if position_size is None:
-            position_size = DEFAULT_VOLUME
+        # Calcular tamanho da posição dinâmico baseado em performance
+        performance = get_performance_summary()
+        position_size = calculate_dynamic_lot(performance)
 
         # Tipo de ordem
         order_type = mt5.ORDER_TYPE_BUY if signal_type == "BUY" else mt5.ORDER_TYPE_SELL
