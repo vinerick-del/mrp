@@ -97,6 +97,26 @@ def get_symbol_info(symbol: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def has_open_position(symbol: str) -> bool:
+    """
+    Verificar se existe posição aberta para o símbolo
+
+    Args:
+        symbol: Par de moedas (ex: EURUSD)
+
+    Returns:
+        True se existe posição aberta, False caso contrário
+    """
+    try:
+        positions = mt5.positions_get(symbol=symbol)
+        if positions is None:
+            return False
+        return len(positions) > 0
+    except Exception as e:
+        print(f"Erro ao verificar posições: {str(e)}")
+        return False
+
+
 def calculate_sl_tp(signal_type: str, current_price: float, point: float) -> Dict[str, float]:
     """
     Calcular Stop Loss e Take Profit
@@ -142,6 +162,13 @@ def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 "status": "erro",
                 "message": "Sinal inválido (faltam pair ou signal)"
+            }
+
+        # Verificar se já existe posição aberta
+        if has_open_position(symbol):
+            return {
+                "status": "erro",
+                "message": f"Já existe posição aberta para {symbol}"
             }
 
         # Obter informações do símbolo
