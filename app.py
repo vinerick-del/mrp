@@ -2579,7 +2579,7 @@ if "resultado" in st.session_state:
                             )
                             _resumo_dfp["% do Total"] = (
                                 (_resumo_dfp["Valor Rateado (R$)"] / _tot_rat * 100)
-                                .where(_tot_rat > 0, 0).round(1).astype(str) + "%"
+                                .div(_tot_rat if _tot_rat > 0 else 1).mul(100).round(1).astype(str) + "%"
                             )
                             _resumo_dfp["Valor Rateado (R$)"] = _resumo_dfp["Valor Rateado (R$)"].apply(_fmt_brl_contabil)
                             st.dataframe(_resumo_dfp, use_container_width=True, hide_index=True)
