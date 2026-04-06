@@ -3,14 +3,19 @@ Serviço de Integração com MetaTrader 5
 Execução automática de ordens com cálculo de risco
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Set
+from datetime import datetime, timedelta
 import MetaTrader5 as mt5
 from config import RISK_PER_TRADE
+from services.performance_service import log_trade
 
 # Configurações de ordem
 DEFAULT_VOLUME = 0.01  # Lote padrão (mínimo)
 SL_PIPS = 20  # Stop Loss em pips
 TP_PIPS = 40  # Take Profit em pips (RR 1:2)
+
+# Rastreamento de trades já processados (evitar duplicidade)
+processed_deal_ids: Set[int] = set()
 
 
 def connect_mt5(server: str = "MetaQuotes-Demo", login: int = None, password: str = None) -> Dict[str, Any]:
@@ -446,4 +451,96 @@ def manage_open_positions() -> Dict[str, Any]:
             "status": "erro",
             "message": f"Erro ao gerenciar posições: {str(e)}",
             "modified": 0
+        }
+
+
+def check_closed_trades(lookback_minutes: int = 60) -> Dict[str, Any]:
+    """
+    Verificar trades fechados e registrar no performance_service
+
+    Args:
+        lookback_minutes: Buscar trades dos últimos N minutos
+
+    Returns:
+        Resumo dos trades processados
+    """
+    global processed_deal_ids
+
+    try:
+        # Obter timeframe para busca
+        utc_from = datetime.utcnow() - timedelta(minutes=lookback_minutes)
+
+        # Buscar operações fechadas
+        deals = mt5.history_deals_get(utc_from)
+        if deals is None or len(deals) == 0:
+            return {
+                "status": "sucesso",
+                "message": "Nenhum trade fechado encontrado",
+                "processed": 0
+            }
+
+        processed_count = 0
+        details = []
+
+        for deal in deals:
+            deal_id = deal.ticket
+
+            # Evitar duplicidade
+            if deal_id in processed_deal_ids:
+                continue
+
+            # Filtrar apenas operações de fechamento (tipo DEAL_TYPE_SELL ou EXIT)
+            if deal.entry != mt5.DEAL_ENTRY_OUT:
+                continue
+
+            # Extrair dados do trade
+            symbol = deal.symbol
+            profit = deal.profit
+            volume = deal.volume
+            close_time = datetime.fromtimestamp(deal.time).isoformat()
+
+            # Determinar tipo (BUY ou SELL) - baseado no histórico
+            # Para simplificar, usamos informações disponíveis
+            trade_type = "BUY" if deal.type == mt5.ORDER_TYPE_BUY else "SELL"
+
+            # Classificar resultado
+            result = "WIN" if profit > 0 else ("LOSS" if profit < 0 else "BREAK_EVEN")
+
+            # Montar dados para log
+            trade_log = {
+                "par": symbol,
+                "tipo": trade_type,
+                "volume": volume,
+                "entry_price": deal.price_open if hasattr(deal, 'price_open') else deal.price,
+                "exit_price": deal.price,
+                "profit_loss": profit,
+                "result": result,
+                "duration": None  # Será calculado se necessário
+            }
+
+            # Registrar no performance_service
+            log_result = log_trade(trade_log)
+
+            if log_result["status"] == "sucesso":
+                processed_deal_ids.add(deal_id)
+                processed_count += 1
+                details.append({
+                    "deal_id": deal_id,
+                    "symbol": symbol,
+                    "profit": round(profit, 2),
+                    "result": result
+                })
+
+        return {
+            "status": "sucesso",
+            "message": f"{processed_count} trade(s) registrado(s)",
+            "processed": processed_count,
+            "details": details
+        }
+
+    except Exception as e:
+        return {
+            "status": "erro",
+            "message": f"Erro ao verificar trades fechados: {str(e)}",
+            "processed": 0
         }
