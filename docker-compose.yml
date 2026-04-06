@@ -1,0 +1,62 @@
+version: '3.9'
+
+services:
+  # API FastAPI - Recebe webhooks e executa ordens
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=False
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-mock_token}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-mock_id}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-mock_secret}
+      - RISK_PER_TRADE=${RISK_PER_TRADE:-1.0}
+      - MAX_TRADES_PER_DAY=${MAX_TRADES_PER_DAY:-5}
+    volumes:
+      - ./app:/app/app
+      - ./logs:/app/logs
+    restart: always
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - trading_network
+
+  # Worker - Monitoramento de posições e trades fechados
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: trading_worker
+    environment:
+      - DEBUG=False
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-mock_token}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-mock_id}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-mock_secret}
+      - RISK_PER_TRADE=${RISK_PER_TRADE:-1.0}
+      - MAX_TRADES_PER_DAY=${MAX_TRADES_PER_DAY:-5}
+    volumes:
+      - ./app:/app/app
+      - ./logs:/app/logs
+    restart: always
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - trading_network
+
+networks:
+  trading_network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local
