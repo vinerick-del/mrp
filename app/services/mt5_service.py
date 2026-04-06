@@ -290,3 +290,160 @@ def send_order(signal: Dict[str, Any]) -> Dict[str, Any]:
             "status": "erro",
             "message": f"Erro ao enviar ordem: {str(e)}"
         }
+
+
+def manage_open_positions() -> Dict[str, Any]:
+    """
+    Gerenciar posições abertas com Break Even e Trailing Stop
+
+    Lógica:
+    - Break Even: Se lucro >= 1R, mover SL para entrada
+    - Trailing Stop: Se lucro >= 2R, atualizar SL com 1R de distância
+
+    Returns:
+        Dicionário com resumo das alterações
+    """
+    try:
+        # Obter todas as posições abertas
+        positions = mt5.positions_get()
+        if positions is None or len(positions) == 0:
+            return {
+                "status": "sucesso",
+                "message": "Nenhuma posição aberta",
+                "modified": 0
+            }
+
+        modified_count = 0
+        details = []
+
+        for position in positions:
+            symbol = position.symbol
+            ticket = position.ticket
+            position_type = position.type
+            open_price = position.price_open
+            current_sl = position.sl
+            current_tp = position.tp
+
+            # Obter preço atual
+            symbol_info = get_symbol_info(symbol)
+            if symbol_info is None:
+                continue
+
+            current_price = symbol_info["bid"] if position_type == mt5.ORDER_TYPE_BUY else symbol_info["ask"]
+            point = symbol_info["point"]
+
+            # Calcular lucro em pips
+            if position_type == mt5.ORDER_TYPE_BUY:
+                profit_pips = (current_price - open_price) / point
+                one_r_pips = SL_PIPS
+            else:  # SELL
+                profit_pips = (open_price - current_price) / point
+                one_r_pips = SL_PIPS
+
+            # Break Even: Se lucro >= 1R, mover SL para entrada
+            if profit_pips >= one_r_pips:
+                new_sl = open_price
+
+                # Validar: não mover SL para pior posição
+                if position_type == mt5.ORDER_TYPE_BUY:
+                    # Para BUY, novo SL deve ser >= SL anterior
+                    if new_sl > current_sl:
+                        # Modificar posição
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "position": ticket,
+                            "sl": round(new_sl, 5),
+                            "tp": current_tp
+                        }
+                        result = mt5.order_modify(request)
+                        if result:
+                            modified_count += 1
+                            details.append({
+                                "ticket": ticket,
+                                "symbol": symbol,
+                                "type": "Break Even",
+                                "new_sl": round(new_sl, 5),
+                                "profit_pips": round(profit_pips, 2)
+                            })
+
+                else:  # SELL
+                    # Para SELL, novo SL deve ser <= SL anterior
+                    if new_sl < current_sl:
+                        # Modificar posição
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "position": ticket,
+                            "sl": round(new_sl, 5),
+                            "tp": current_tp
+                        }
+                        result = mt5.order_modify(request)
+                        if result:
+                            modified_count += 1
+                            details.append({
+                                "ticket": ticket,
+                                "symbol": symbol,
+                                "type": "Break Even",
+                                "new_sl": round(new_sl, 5),
+                                "profit_pips": round(profit_pips, 2)
+                            })
+
+            # Trailing Stop: Se lucro >= 2R, atualizar SL com 1R de distância
+            elif profit_pips >= (one_r_pips * 2):
+                # Manter 1R de distância do preço atual
+                trailing_distance = (one_r_pips * point)
+
+                if position_type == mt5.ORDER_TYPE_BUY:
+                    new_sl = current_price - trailing_distance
+                    # Novo SL deve ser >= SL anterior
+                    if new_sl > current_sl:
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "position": ticket,
+                            "sl": round(new_sl, 5),
+                            "tp": current_tp
+                        }
+                        result = mt5.order_modify(request)
+                        if result:
+                            modified_count += 1
+                            details.append({
+                                "ticket": ticket,
+                                "symbol": symbol,
+                                "type": "Trailing Stop",
+                                "new_sl": round(new_sl, 5),
+                                "profit_pips": round(profit_pips, 2)
+                            })
+
+                else:  # SELL
+                    new_sl = current_price + trailing_distance
+                    # Novo SL deve ser <= SL anterior
+                    if new_sl < current_sl:
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "position": ticket,
+                            "sl": round(new_sl, 5),
+                            "tp": current_tp
+                        }
+                        result = mt5.order_modify(request)
+                        if result:
+                            modified_count += 1
+                            details.append({
+                                "ticket": ticket,
+                                "symbol": symbol,
+                                "type": "Trailing Stop",
+                                "new_sl": round(new_sl, 5),
+                                "profit_pips": round(profit_pips, 2)
+                            })
+
+        return {
+            "status": "sucesso",
+            "message": f"{modified_count} posição(ões) atualizada(s)",
+            "modified": modified_count,
+            "details": details
+        }
+
+    except Exception as e:
+        return {
+            "status": "erro",
+            "message": f"Erro ao gerenciar posições: {str(e)}",
+            "modified": 0
+        }
