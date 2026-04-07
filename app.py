@@ -797,8 +797,19 @@ if _disparar:
                     print(f"  [LT]   Colunas em materiais.csv: {list(materiais.columns)}")
 
             # ── Pipeline MRP ──────────────────────────────────────────────────
-            # passo_1_2 retorna (demanda_consolidada, demanda_detail) — lê o arquivo uma só vez
-            demanda, _demanda_detail_raw = passo_1_2_demanda()
+            # passo_1_2 retorna (demanda, demanda_detail) na versão nova,
+            # ou apenas demanda na versão antiga — compatível com ambas.
+            _p12_result = passo_1_2_demanda()
+            if isinstance(_p12_result, tuple):
+                demanda, _demanda_detail_raw = _p12_result
+            else:
+                demanda = _p12_result
+                _raw_path = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW) if ARQUIVO_DEMANDA_RAW else None
+                _demanda_detail_raw = (
+                    _cached_transformar_demanda(_raw_path, _mtime(_raw_path))
+                    if _raw_path and os.path.exists(_raw_path)
+                    else pd.DataFrame()
+                )
             estoque                  = passo_3_estoque()
             entradas, df_abertos_fut = passo_4_pedidos_abertos()
             abc        = _cached_passo5_abc(demanda, materiais, contratos if not contratos.empty else pd.DataFrame())
