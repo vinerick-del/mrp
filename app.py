@@ -2422,9 +2422,9 @@ if "resultado" in st.session_state:
         # ── Seção 3: Importação em lote ───────────────────────────────────────
         st.markdown("#### 📤 Importação em Lote")
         st.caption(
-            "Formato CSV esperado: `material;departamento;programa_orcamentario;proporcao`  \n"
-            "Coluna `proporcao` aceita 0-1 (ex.: 0.70) ou 0-100 (ex.: 70).  \n"
-            "A soma por material deve ser exatamente 100%."
+            "Formato CSV/TSV: `material;departamento;programa_orcamentario;proporcao`  \n"
+            "Separador: `;` (ponto-e-vírgula) ou `TAB`.  \n"
+            "Coluna `proporcao` aceita: `0,70` · `0.70` · `70` · `70%` · `70,0%` · `3,1%`"
         )
         f_rateio_lote = st.file_uploader(
             "Upload CSV de rateio em lote",
@@ -2434,9 +2434,13 @@ if "resultado" in st.session_state:
         if f_rateio_lote:
             try:
                 f_rateio_lote.seek(0)
-                df_lote = pd.read_csv(f_rateio_lote, sep=";", dtype={"material": str})
+                _raw_lote = f_rateio_lote.read().decode("utf-8", errors="replace")
+                # Auto-detectar separador (TAB ou ponto-e-vírgula)
+                _sep_lote = "\t" if "\t" in _raw_lote.split("\n")[0] else ";"
+                import io as _io_lote
+                df_lote = pd.read_csv(_io_lote.StringIO(_raw_lote), sep=_sep_lote, dtype={"material": str})
                 df_lote.columns = [c.strip().lower() for c in df_lote.columns]
-                # Normalizar nomes de coluna (case/espaço)
+                # Normalizar nomes de coluna
                 _col_rename = {
                     "mat"      : "material",
                     "dept"     : "departamento",
@@ -2451,7 +2455,18 @@ if "resultado" in st.session_state:
                     expected = ["material", "departamento", "programa_orcamentario", "proporcao"]
                     df_lote.columns = expected[:len(df_lote.columns)]
                 df_lote["material"] = df_lote["material"].astype(str).str.strip()
-                df_lote["proporcao"] = pd.to_numeric(df_lote["proporcao"], errors="coerce").fillna(0.0)
+
+                # Normalizar proporcao: remove %, troca vírgula por ponto, converte
+                def _parse_proporcao(v):
+                    if pd.isna(v):
+                        return 0.0
+                    s = str(v).strip().replace("%", "").replace(",", ".").strip()
+                    try:
+                        return float(s)
+                    except ValueError:
+                        return 0.0
+
+                df_lote["proporcao"] = df_lote["proporcao"].apply(_parse_proporcao)
                 # Detectar escala (0-1 vs 0-100)
                 if df_lote["proporcao"].max() <= 1.0:
                     df_lote["proporcao_pct"] = (df_lote["proporcao"] * 100).round(4)
