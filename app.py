@@ -2355,6 +2355,13 @@ if "resultado" in st.session_state:
                     st.session_state.pop("resultado", None)
                     st.rerun()
 
+                # Dica de opções disponíveis (visível antes do form)
+                st.caption(
+                    "**Departamentos disponíveis:** " + " · ".join(_depts_list) + "  \n"
+                    "**Programas disponíveis:** "    + " · ".join(_progs_list[:10])
+                    + (" …" if len(_progs_list) > 10 else "")
+                )
+
                 # Form: sem rerun a cada campo — só processa ao clicar Salvar
                 with st.form(key=f"rm_form_{mat_sel}", clear_on_submit=False):
                     linhas_form: list[dict] = []
@@ -2363,43 +2370,29 @@ if "resultado" in st.session_state:
                         _c1, _c2, _c3 = st.columns([3, 3, 1])
                         _ex_row = _existing_rows[_i] if _i < len(_existing_rows) else {}
 
-                        # Departamento — selectbox + campo livre abaixo (se não estiver na lista)
+                        # Departamento — campo livre (cole ou digite)
                         _def_dept = str(_ex_row.get("departamento", "")) if _ex_row else ""
-                        _dept_idx = _depts_list.index(_def_dept) if _def_dept in _depts_list else 0
-                        _dept_sel = _c1.selectbox(
-                            f"Departamento {_i+1}", _depts_list,
-                            index=_dept_idx, key=f"rm_dept_{mat_sel}_{_i}",
-                        )
-                        _dept_custom = _c1.text_input(
-                            f"rm_dept_custom_{_i}",
-                            value=_def_dept if _def_dept not in _depts_list else "",
-                            placeholder="Ou digitar novo departamento…",
-                            key=f"rm_dept_outro_{mat_sel}_{_i}",
-                            label_visibility="collapsed",
-                        )
-                        _dept_val = _dept_custom.strip() or _dept_sel
+                        _dept_val = _c1.text_input(
+                            f"Departamento {_i+1}",
+                            value=_def_dept,
+                            placeholder="Cole ou digite o departamento",
+                            key=f"rm_dept_{mat_sel}_{_i}",
+                        ).strip()
 
-                        # Programa orçamentário — mesmo padrão
+                        # Programa orçamentário — campo livre (cole ou digite)
                         _def_prog = str(_ex_row.get("programa_orcamentario", "")) if _ex_row else ""
-                        _prog_idx = _progs_list.index(_def_prog) if _def_prog in _progs_list else 0
-                        _prog_sel = _c2.selectbox(
-                            f"Programa {_i+1}", _progs_list,
-                            index=_prog_idx, key=f"rm_prog_{mat_sel}_{_i}",
-                        )
-                        _prog_custom = _c2.text_input(
-                            f"rm_prog_custom_{_i}",
-                            value=_def_prog if _def_prog not in _progs_list else "",
-                            placeholder="Ou digitar novo programa…",
-                            key=f"rm_prog_outro_{mat_sel}_{_i}",
-                            label_visibility="collapsed",
-                        )
-                        _prog_val = _prog_custom.strip() or _prog_sel
+                        _prog_val = _c2.text_input(
+                            f"Programa {_i+1}",
+                            value=_def_prog,
+                            placeholder="Cole ou digite o programa",
+                            key=f"rm_prog_{mat_sel}_{_i}",
+                        ).strip()
 
-                        # Percentual
-                        _def_pct = int(round(float(_ex_row.get("proporcao", 0)) * 100)) if _ex_row else 0
+                        # Percentual — decimal livre (ex: 4, 5.5, 99.9)
+                        _def_pct = round(float(_ex_row.get("proporcao", 0)) * 100, 2) if _ex_row else 0.0
                         _pct_val = _c3.number_input(
-                            f"% {_i+1}", min_value=0, max_value=100,
-                            step=5, value=_def_pct,
+                            f"% {_i+1}", min_value=0.0, max_value=100.0,
+                            step=0.1, value=float(_def_pct), format="%.2f",
                             key=f"rm_pct_{mat_sel}_{_i}",
                         )
 
@@ -2415,8 +2408,8 @@ if "resultado" in st.session_state:
                         type="primary",
                     )
                     if _submitted:
-                        _soma = sum(l["proporcao_pct"] for l in linhas_form)
-                        if _soma != 100:
+                        _soma = round(sum(l["proporcao_pct"] for l in linhas_form), 4)
+                        if abs(_soma - 100.0) > 0.01:
                             st.error(f"❌ Soma dos percentuais = **{_soma}%** — deve ser exatamente 100%")
                         else:
                             _salvar_rateio_manual(str(mat_sel), linhas_form)
