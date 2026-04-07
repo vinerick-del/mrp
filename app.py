@@ -200,13 +200,22 @@ _RATEIO_MANUAL_PATH = os.path.join(DIR_DADOS, "rateio_manual.csv")
 
 
 def _carregar_rateio_manual() -> pd.DataFrame:
-    """Retorna DataFrame do rateio_manual.csv ou vazio se não existir."""
+    """Retorna DataFrame do rateio_manual.csv ou vazio se não existir.
+    Filtra linhas com departamento/programa vazios ou NaN (limpeza preventiva).
+    """
     if not os.path.exists(_RATEIO_MANUAL_PATH):
         return pd.DataFrame(
             columns=["material", "departamento", "programa_orcamentario", "proporcao", "atualizado_em"]
         )
     try:
-        return pd.read_csv(_RATEIO_MANUAL_PATH, sep=";", dtype={"material": str})
+        df = pd.read_csv(_RATEIO_MANUAL_PATH, sep=";", dtype={"material": str})
+        # Remove linhas com departamento ou programa vazio/NaN — geradas por bug anterior
+        df = df.dropna(subset=["departamento", "programa_orcamentario", "proporcao"])
+        df = df[
+            (df["departamento"].str.strip() != "") &
+            (df["programa_orcamentario"].str.strip() != "")
+        ]
+        return df.reset_index(drop=True)
     except Exception:
         return pd.DataFrame(
             columns=["material", "departamento", "programa_orcamentario", "proporcao", "atualizado_em"]
@@ -215,6 +224,7 @@ def _carregar_rateio_manual() -> pd.DataFrame:
 
 def _salvar_rateio_manual(material: str, linhas: list[dict]) -> None:
     """Persiste rateio manual para um material.
+    Salva apenas linhas com departamento e programa preenchidos e proporcao > 0.
 
     Args:
         material: código do material.
@@ -233,6 +243,10 @@ def _salvar_rateio_manual(material: str, linhas: list[dict]) -> None:
             "atualizado_em"         : now_str,
         }
         for l in linhas
+        # Só salva linhas com departamento, programa e proporção preenchidos
+        if str(l.get("departamento", "")).strip()
+        and str(l.get("programa_orcamentario", "")).strip()
+        and float(l.get("proporcao_pct", 0)) > 0
     ])
     df = pd.concat([df, new_rows], ignore_index=True)
     os.makedirs(DIR_DADOS, exist_ok=True)
@@ -2456,7 +2470,8 @@ if "resultado" in st.session_state:
                         _ex_row = _existing_rows[_i] if _i < len(_existing_rows) else {}
 
                         # Departamento — campo livre (cole ou digite)
-                        _def_dept = str(_ex_row.get("departamento", "")) if _ex_row else ""
+                        _raw_dept = _ex_row.get("departamento", "") if _ex_row else ""
+                        _def_dept = "" if (not _raw_dept or str(_raw_dept) in ("nan", "NaN", "None")) else str(_raw_dept)
                         _dept_val = _c1.text_input(
                             f"Departamento {_i+1}",
                             value=_def_dept,
@@ -2465,7 +2480,8 @@ if "resultado" in st.session_state:
                         ).strip()
 
                         # Programa orçamentário — campo livre (cole ou digite)
-                        _def_prog = str(_ex_row.get("programa_orcamentario", "")) if _ex_row else ""
+                        _raw_prog = _ex_row.get("programa_orcamentario", "") if _ex_row else ""
+                        _def_prog = "" if (not _raw_prog or str(_raw_prog) in ("nan", "NaN", "None")) else str(_raw_prog)
                         _prog_val = _c2.text_input(
                             f"Programa {_i+1}",
                             value=_def_prog,
@@ -2493,14 +2509,26 @@ if "resultado" in st.session_state:
                         type="primary",
                     )
                     if _submitted:
-                        _soma = round(sum(l["proporcao_pct"] for l in linhas_form), 4)
-                        if abs(_soma - 100.0) > 0.01:
-                            st.error(f"❌ Soma dos percentuais = **{_soma}%** — deve ser exatamente 100%")
+                        # Considera apenas linhas preenchidas para validação
+                        _linhas_validas = [
+                            l for l in linhas_form
+                            if str(l.get("departamento", "")).strip()
+                            and str(l.get("programa_orcamentario", "")).strip()
+                        ]
+                        if not _linhas_validas:
+                            st.error("❌ Preencha ao menos uma linha com Departamento e Programa.")
                         else:
-                            _salvar_rateio_manual(str(mat_sel), linhas_form)
-                            st.success(f"✅ Rateio manual salvo para **{mat_sel}**.")
-                            _atualizar_rateio_session()
-                            st.rerun()
+                            _soma = round(sum(l["proporcao_pct"] for l in _linhas_validas), 4)
+                            if abs(_soma - 100.0) > 0.01:
+                                st.error(
+                                    f"❌ Soma dos percentuais das linhas preenchidas = **{_soma}%** "
+                                    f"— deve ser exatamente 100%"
+                                )
+                            else:
+                                _salvar_rateio_manual(str(mat_sel), linhas_form)
+                                st.success(f"✅ Rateio manual salvo para **{mat_sel}**.")
+                                _atualizar_rateio_session()
+                                st.rerun()
 
         st.divider()
 
