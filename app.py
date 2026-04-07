@@ -512,25 +512,25 @@ def _processar_rateio_dfp(
     merged["proporcao"]             = merged["proporcao"].fillna(1.0)
     merged["_valor_rateado"]        = merged["_val_mat"] * merged["proporcao"]
 
-    # ── Montar saída limpa ───────────────────────────────────────────────────
-    _out = pd.DataFrame({
-        "Exercício"          : merged.get("Exercício do nº doc.FI"),
-        "Período"            : merged.get("Período"),
-        "Data"               : pd.to_datetime(merged.get("Data de lançamento"), errors="coerce").dt.strftime("%d/%m/%Y"),
-        "Fornecedor"         : merged.get("Nome 1"),
-        "Pedido"             : merged[col_po].astype("Int64"),
-        "Contrato"           : merged.get("Contrato básico"),
-        "Referência"         : merged.get("Referência"),
-        "Material"           : merged["Material"],
-        "Descrição"          : merged["_descricao"],
-        "Departamento"       : merged["departamento"],
-        "Prog. Orçamentário" : merged["programa_orcamentario"],
-        "Valor Original (R$)": merged[col_val],
-        "Peso Material %"    : (merged["_peso"] * 100).round(1),
-        "Valor p/ Material"  : merged["_val_mat"].round(2),
-        "Proporção Rateio %" : (merged["proporcao"] * 100).round(1),
-        "Valor Rateado (R$)" : merged["_valor_rateado"].round(2),
-    })
+    # ── Montar saída: todas as colunas originais DFP + colunas de rateio ────────
+    # Remove colunas internas auxiliares (_peso, _val_mat, _valor_rateado, etc.)
+    # e adiciona as colunas de rateio de forma nomeada e legível.
+    _cols_internas = {"_peso", "_val_mat", "_valor_rateado", "_descricao", "Pedido",
+                      "departamento", "programa_orcamentario", "proporcao"}
+    _cols_orig_dfp = [c for c in merged.columns if c not in _cols_internas]
+
+    _out = merged[_cols_orig_dfp].copy()
+
+    # Colunas de rateio adicionadas ao final
+    _out["Material identificado"]   = merged["Material"]
+    _out["Descrição material"]      = merged["_descricao"]
+    _out["Departamento"]            = merged["departamento"]
+    _out["Prog. Orçamentário"]      = merged["programa_orcamentario"]
+    _out["Peso Material %"]         = (merged["_peso"] * 100).round(1)
+    _out["Proporção Rateio %"]      = (merged["proporcao"] * 100).round(1)
+    _out["Valor p/ Material (R$)"]  = merged["_val_mat"].round(2)
+    _out["Valor Rateado (R$)"]      = merged["_valor_rateado"].round(2)
+
     return _out.reset_index(drop=True)
 
 
@@ -2779,7 +2779,7 @@ if "resultado" in st.session_state:
                         # Separar causas do não-rateio:
                         # 1) PO não encontrado no MB51 → Material = NAO_IDENTIFICADO
                         # 2) Material identificado mas sem rateio configurado → Departamento = NAO_DEFINIDO com material real
-                        _mask_sem_mb  = _res_dfp["Material"] == "NAO_IDENTIFICADO"
+                        _mask_sem_mb  = _res_dfp["Material identificado"] == "NAO_IDENTIFICADO"
                         _mask_sem_rat = (_res_dfp["Departamento"] == "NAO_DEFINIDO") & ~_mask_sem_mb
                         _tot_sem_mb   = _res_dfp.loc[_mask_sem_mb,  "Valor Rateado (R$)"].sum()
                         _tot_sem_rat  = _res_dfp.loc[_mask_sem_rat, "Valor Rateado (R$)"].sum()
@@ -2797,11 +2797,11 @@ if "resultado" in st.session_state:
                         if _tot_sem_mb > 0:
                             st.warning(
                                 f"**{_fmt_brl_contabil(_tot_sem_mb)}** não rateados porque o **PO não foi "
-                                f"encontrado no MB51** carregado ({_res_dfp[_mask_sem_mb]['Pedido'].nunique()} PO(s)).  \n"
+                                f"encontrado no MB51** carregado ({_res_dfp.loc[_mask_sem_mb, 'Nº do documento precedente'].nunique()} PO(s)).  \n"
                                 f"Verifique se o arquivo MB51 cobre todos os pedidos do DFP."
                             )
                         if _tot_sem_rat > 0:
-                            _mats_sem_rat = _res_dfp.loc[_mask_sem_rat, "Material"].unique().tolist()
+                            _mats_sem_rat = _res_dfp.loc[_mask_sem_rat, "Material identificado"].unique().tolist()
                             st.warning(
                                 f"**{_fmt_brl_contabil(_tot_sem_rat)}** não rateados — material(is) sem "
                                 f"departamento/programa configurado: **{', '.join(str(m) for m in _mats_sem_rat[:10])}**.  \n"
@@ -2823,17 +2823,21 @@ if "resultado" in st.session_state:
                             st.dataframe(_resumo_dfp, use_container_width=True, hide_index=True)
 
                         st.markdown("#### Detalhamento linha a linha")
-                        _cols_det = [
-                            "Exercício", "Período", "Data", "Fornecedor",
-                            "Pedido", "Contrato", "Referência",
-                            "Material", "Descrição",
+                        # Colunas prioritárias para exibição (todas as demais ficam no Excel)
+                        _cols_det_prio = [
+                            "Material identificado", "Descrição material",
                             "Departamento", "Prog. Orçamentário",
-                            "Valor Original (R$)", "Peso Material %",
-                            "Valor p/ Material", "Proporção Rateio %", "Valor Rateado (R$)",
+                            "Proporção Rateio %", "Valor p/ Material (R$)", "Valor Rateado (R$)",
                         ]
+                        # Colunas originais DFP que existem (exceto as de rateio já listadas)
+                        _cols_orig_show = [
+                            c for c in _res_dfp.columns
+                            if c not in set(_cols_det_prio)
+                        ]
+                        _cols_det = _cols_orig_show + _cols_det_prio
                         _cols_det = [_c for _c in _cols_det if _c in _res_dfp.columns]
                         _det_fmt = _res_dfp[_cols_det].copy()
-                        for _fc in ["Valor Original (R$)", "Valor p/ Material", "Valor Rateado (R$)"]:
+                        for _fc in [c for c in _det_fmt.columns if "R$" in c or "Valor" in c]:
                             if _fc in _det_fmt.columns:
                                 _det_fmt[_fc] = _det_fmt[_fc].apply(_fmt_brl_contabil)
                         st.dataframe(_det_fmt, use_container_width=True, height=440, hide_index=True)
@@ -2842,12 +2846,24 @@ if "resultado" in st.session_state:
                             import io as _io_dfp
                             _buf_dfp = _io_dfp.BytesIO()
                             with pd.ExcelWriter(_buf_dfp, engine="openpyxl") as _wr_dfp:
-                                _res_dfp.to_excel(_wr_dfp, sheet_name="Rateio DFP", index=False)
+                                # Aba 1: DFP completo + colunas de rateio
+                                _res_dfp.to_excel(_wr_dfp, sheet_name="DFP Rateado", index=False)
+                                # Aba 2: Resumo por Depto/Prog
                                 (
                                     _res_dfp
-                                    .groupby(["Departamento","Prog. Orçamentário"], as_index=False)["Valor Rateado (R$)"]
-                                    .sum().sort_values("Valor Rateado (R$)", ascending=False)
-                                    .to_excel(_wr_dfp, sheet_name="Resumo", index=False)
+                                    .groupby(["Departamento", "Prog. Orçamentário"], as_index=False)
+                                    ["Valor Rateado (R$)"].sum()
+                                    .sort_values("Valor Rateado (R$)", ascending=False)
+                                    .to_excel(_wr_dfp, sheet_name="Resumo Depto-Prog", index=False)
+                                )
+                                # Aba 3: Resumo por Material
+                                (
+                                    _res_dfp
+                                    .groupby(["Material identificado", "Descrição material",
+                                              "Departamento", "Prog. Orçamentário"], as_index=False)
+                                    ["Valor Rateado (R$)"].sum()
+                                    .sort_values("Valor Rateado (R$)", ascending=False)
+                                    .to_excel(_wr_dfp, sheet_name="Resumo Material", index=False)
                                 )
                             st.download_button(
                                 label="⬇ Baixar Rateio DFP (Excel)",
