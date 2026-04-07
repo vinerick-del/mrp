@@ -287,6 +287,31 @@ def _calcular_alertas(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPER: parsear valor numérico com fallback para formato brasileiro (SAP)
+# ─────────────────────────────────────────────────────────────────────────────
+def _to_numeric_sap(series: pd.Series) -> pd.Series:
+    """
+    Converte série para numérico suportando formato brasileiro do SAP.
+    Tenta pd.to_numeric primeiro; para células que falharem (texto como
+    '89.270,30'), remove separador de milhar ('.') e substitui ',' por '.'.
+    """
+    num = pd.to_numeric(series, errors="coerce")
+    failed = num.isna() & series.notna()
+    if failed.any():
+        s = series[failed].astype(str).str.strip()
+        # Remove prefixo monetário, espaços e 'R$'
+        s = s.str.replace(r"R\$\s*", "", regex=True)
+        # Detecta formato BR: tem vírgula como separador decimal
+        # (ex: '89.270,30' ou '1.234,56') — ponto = milhar, vírgula = decimal
+        br_mask = s.str.contains(r"\d\.\d{3},\d", regex=True)
+        s_br = s[br_mask].str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+        s_us = s[~br_mask].str.replace(",", "", regex=False)  # formato US com vírgula milhar
+        fixed = pd.concat([s_br, s_us]).reindex(s.index)
+        num[failed] = pd.to_numeric(fixed, errors="coerce")
+    return num.fillna(0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPER: ratear relatório DFP por material (MB51) e departamento (rateio cfg)
 # ─────────────────────────────────────────────────────────────────────────────
 def _processar_rateio_dfp(
@@ -344,7 +369,7 @@ def _processar_rateio_dfp(
     col_val = "Mont.em moeda AAF a controlar contra orç"
 
     dfp[col_po]  = pd.to_numeric(dfp[col_po],  errors="coerce")
-    dfp[col_val] = pd.to_numeric(dfp[col_val], errors="coerce").fillna(0)
+    dfp[col_val] = _to_numeric_sap(dfp[col_val])
 
     # ── Join DFP × MB51 ──────────────────────────────────────────────────────
     merged = dfp.merge(
@@ -2593,7 +2618,7 @@ if "resultado" in st.session_state:
                         # (Valor Original em _res_dfp é repetido por linha de rateio → não somar)
                         _col_val_dfp = "Mont.em moeda AAF a controlar contra orç"
                         _tot_orig = (
-                            pd.to_numeric(_aba_dfp[_col_val_dfp], errors="coerce").fillna(0).sum()
+                            _to_numeric_sap(_aba_dfp[_col_val_dfp]).sum()
                             if _col_val_dfp in _aba_dfp.columns else 0.0
                         )
                         _tot_rat      = _res_dfp["Valor Rateado (R$)"].sum()
