@@ -2331,7 +2331,7 @@ if "resultado" in st.session_state:
         if not _mats_opcoes and not mat_sel:
             st.info("Nenhum material disponível. Use o campo 'Digitar código' para cadastrar.")
 
-            if mat_sel:
+        if mat_sel:
                 _desc_sel = _desc_map.get(str(mat_sel), "-")
                 _qtd_nao_def = 0.0
                 if "locals" in dir() and not df_rateio.empty:
