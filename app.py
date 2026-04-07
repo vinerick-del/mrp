@@ -2591,31 +2591,36 @@ if "resultado" in st.session_state:
                             if _col_val_dfp in _aba_dfp.columns else 0.0
                         )
                         _tot_rat      = _res_dfp["Valor Rateado (R$)"].sum()
-                        _tot_nao_rat  = _res_dfp.loc[
-                            _res_dfp["Departamento"] == "NAO_DEFINIDO", "Valor Rateado (R$)"
-                        ].sum()
+                        # Separar causas do não-rateio:
+                        # 1) PO não encontrado no MB51 → Material = NAO_IDENTIFICADO
+                        # 2) Material identificado mas sem rateio configurado → Departamento = NAO_DEFINIDO com material real
+                        _mask_sem_mb  = _res_dfp["Material"] == "NAO_IDENTIFICADO"
+                        _mask_sem_rat = (_res_dfp["Departamento"] == "NAO_DEFINIDO") & ~_mask_sem_mb
+                        _tot_sem_mb   = _res_dfp.loc[_mask_sem_mb,  "Valor Rateado (R$)"].sum()
+                        _tot_sem_rat  = _res_dfp.loc[_mask_sem_rat, "Valor Rateado (R$)"].sum()
+                        _tot_nao_rat  = _tot_sem_mb + _tot_sem_rat
                         _tot_rat_ok   = _tot_rat - _tot_nao_rat
-                        _n_sem_mb     = (_res_dfp["Material"] == "NAO_IDENTIFICADO").sum()
-                        _n_sem_rat    = (_res_dfp["Departamento"] == "NAO_DEFINIDO").sum()
 
                         _dc1, _dc2, _dc3 = st.columns(3)
-                        _dc1.metric("Total DFP (R$)",          _fmt_brl_contabil(_tot_orig))
-                        _dc2.metric("✅ Rateado (R$)",          _fmt_brl_contabil(_tot_rat_ok),
+                        _dc1.metric("Total DFP (R$)",     _fmt_brl_contabil(_tot_orig))
+                        _dc2.metric("✅ Rateado (R$)",     _fmt_brl_contabil(_tot_rat_ok),
                                     f"{_tot_rat_ok/_tot_orig*100:.1f}% do total" if _tot_orig else "")
-                        _dc3.metric("⚠️ Não Rateado (R$)",      _fmt_brl_contabil(_tot_nao_rat),
+                        _dc3.metric("⚠️ Não Rateado (R$)", _fmt_brl_contabil(_tot_nao_rat),
                                     f"{_tot_nao_rat/_tot_orig*100:.1f}% do total" if _tot_orig else "",
                                     delta_color="inverse")
 
-                        if _tot_nao_rat > 0:
+                        if _tot_sem_mb > 0:
                             st.warning(
-                                f"**{_fmt_brl_contabil(_tot_nao_rat)}** ({_tot_nao_rat/_tot_orig*100:.1f}% do total DFP) "
-                                f"não foram rateados — material sem departamento/programa definido.  \n"
-                                f"Configure o rateio na aba **⚠️ Rateio Pendente** para alocar esses valores."
+                                f"**{_fmt_brl_contabil(_tot_sem_mb)}** não rateados porque o **PO não foi "
+                                f"encontrado no MB51** carregado ({_res_dfp[_mask_sem_mb]['Pedido'].nunique()} PO(s)).  \n"
+                                f"Verifique se o arquivo MB51 cobre todos os pedidos do DFP."
                             )
-                        if _n_sem_mb > 0:
-                            st.info(
-                                f"ℹ️ **{_n_sem_mb}** linha(s) sem material identificado em MB51 "
-                                f"(PO não encontrado)."
+                        if _tot_sem_rat > 0:
+                            _mats_sem_rat = _res_dfp.loc[_mask_sem_rat, "Material"].unique().tolist()
+                            st.warning(
+                                f"**{_fmt_brl_contabil(_tot_sem_rat)}** não rateados — material(is) sem "
+                                f"departamento/programa configurado: **{', '.join(str(m) for m in _mats_sem_rat[:10])}**.  \n"
+                                f"Configure na aba **⚠️ Rateio Pendente**."
                             )
 
                         with st.expander("📊 Resumo por Departamento / Programa Orçamentário", expanded=True):
