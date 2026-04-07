@@ -2602,13 +2602,6 @@ if "resultado" in st.session_state:
                                 f"(PO não encontrado)."
                             )
 
-                        if _divergencia > 0.01:
-                            st.info(
-                                f"ℹ️ **Total DFP ≠ Total Rateado** (Δ {_fmt_brl_contabil(_divergencia)}): "
-                                f"materiais sem rateio configurado recebem departamento NAO_DEFINIDO mas o "
-                                f"valor é preservado. Verifique os itens destacados abaixo."
-                            )
-
                         with st.expander("📊 Resumo por Departamento / Programa Orçamentário", expanded=True):
                             _resumo_dfp = (
                                 _res_dfp
