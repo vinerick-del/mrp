@@ -36,6 +36,7 @@ from mrp import (
     ler_historico_mb51,
     ler_politica_pagamento,
     derivar_rateio_da_demanda,
+    passo_12_rateio,
     transformar_demanda_dtm,
     ARQUIVO_DEMANDA_RAW,
     DIR_DADOS,
@@ -236,6 +237,31 @@ def _salvar_rateio_manual(material: str, linhas: list[dict]) -> None:
     df = pd.concat([df, new_rows], ignore_index=True)
     os.makedirs(DIR_DADOS, exist_ok=True)
     df.to_csv(_RATEIO_MANUAL_PATH, sep=";", index=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER: atualizar só o rateio no session_state (sem reprocessar MRP inteiro)
+# ─────────────────────────────────────────────────────────────────────────────
+def _atualizar_rateio_session() -> None:
+    """
+    Recomputa apenas o passo_12_rateio usando os dados já calculados no
+    resultado do MRP. Muito mais rápido que reprocessar o MRP inteiro.
+    Se não houver resultado em sessão, limpa tudo para forçar reprocessamento.
+    """
+    res = st.session_state.get("resultado")
+    if res is not None:
+        try:
+            _df_ped      = res.get("pedidos",          pd.DataFrame())
+            _df_ab       = res.get("abertos_fut",      pd.DataFrame())
+            _dem_detail  = res.get("demanda_detail_df", pd.DataFrame())
+            _novo_rateio = passo_12_rateio(_df_ped, _df_ab, _dem_detail if not _dem_detail.empty else None)
+            st.session_state["resultado"]["rateio"] = _novo_rateio
+        except Exception:
+            # Fallback seguro: força reprocessamento completo
+            st.session_state.pop("resultado", None)
+            st.session_state.pop("_auto_processado", None)
+    else:
+        st.session_state.pop("_auto_processado", None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2410,9 +2436,8 @@ if "resultado" in st.session_state:
                     _df_rm_del.to_csv(_RATEIO_MANUAL_PATH, sep=";", index=False)
                     if _linhas_key in st.session_state:
                         del st.session_state[_linhas_key]
-                    st.success(f"✅ Rateio manual removido para **{mat_sel}**. Reprocessando MRP...")
-                    st.session_state.pop("resultado", None)
-                    st.session_state.pop("_auto_processado", None)
+                    st.success(f"✅ Rateio manual removido para **{mat_sel}**.")
+                    _atualizar_rateio_session()
                     st.rerun()
 
                 # Dica de opções disponíveis (visível antes do form)
@@ -2473,9 +2498,8 @@ if "resultado" in st.session_state:
                             st.error(f"❌ Soma dos percentuais = **{_soma}%** — deve ser exatamente 100%")
                         else:
                             _salvar_rateio_manual(str(mat_sel), linhas_form)
-                            st.success(f"✅ Rateio manual salvo para **{mat_sel}**. Reprocessando MRP...")
-                            st.session_state.pop("resultado", None)
-                            st.session_state.pop("_auto_processado", None)
+                            st.success(f"✅ Rateio manual salvo para **{mat_sel}**.")
+                            _atualizar_rateio_session()
                             st.rerun()
 
         st.divider()
@@ -2554,9 +2578,8 @@ if "resultado" in st.session_state:
                             _grp_l = df_lote[df_lote["material"] == _mat_l]
                             _lns = _grp_l[["departamento", "programa_orcamentario", "proporcao_pct"]].to_dict("records")
                             _salvar_rateio_manual(_mat_l, _lns)
-                        st.success(f"✅ {df_lote['material'].nunique()} material(is) importado(s). Reprocessando MRP...")
-                        st.session_state.pop("resultado", None)
-                        st.session_state.pop("_auto_processado", None)
+                        st.success(f"✅ {df_lote['material'].nunique()} material(is) importado(s).")
+                        _atualizar_rateio_session()
                         st.rerun()
             except Exception as _e_lote:
                 st.error(f"Erro ao ler arquivo: {_e_lote}")
