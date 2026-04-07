@@ -2353,6 +2353,7 @@ if "resultado" in st.session_state:
                         del st.session_state[_linhas_key]
                     st.success(f"✅ Rateio manual removido para **{mat_sel}**. Reprocessando MRP...")
                     st.session_state.pop("resultado", None)
+                    st.session_state.pop("_auto_processado", None)
                     st.rerun()
 
                 # Dica de opções disponíveis (visível antes do form)
@@ -2415,6 +2416,7 @@ if "resultado" in st.session_state:
                             _salvar_rateio_manual(str(mat_sel), linhas_form)
                             st.success(f"✅ Rateio manual salvo para **{mat_sel}**. Reprocessando MRP...")
                             st.session_state.pop("resultado", None)
+                            st.session_state.pop("_auto_processado", None)
                             st.rerun()
 
         st.divider()
@@ -2495,6 +2497,7 @@ if "resultado" in st.session_state:
                             _salvar_rateio_manual(_mat_l, _lns)
                         st.success(f"✅ {df_lote['material'].nunique()} material(is) importado(s). Reprocessando MRP...")
                         st.session_state.pop("resultado", None)
+                        st.session_state.pop("_auto_processado", None)
                         st.rerun()
             except Exception as _e_lote:
                 st.error(f"Erro ao ler arquivo: {_e_lote}")
