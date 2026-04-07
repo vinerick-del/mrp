@@ -2307,23 +2307,34 @@ if "resultado" in st.session_state:
 
         _mats_opcoes = sorted(_mats_nao_def_set | set(_mats_manual))
 
-        # ── Seleção de material: lista + campo livre para materiais não listados ─
-        _col_sel, _col_dig = st.columns([3, 2])
-        with _col_sel:
-            _mat_lista = st.selectbox(
-                "Selecionar da lista",
-                [""] + _mats_opcoes,
-                key="rm_mat_sel",
-                help="Materiais pendentes + já com rateio manual (para edição)",
-            )
+        # ── Seleção de material: lista suspensa ─────────────────────────────────
+        _mat_lista = st.selectbox(
+            "Selecionar material",
+            [""] + _mats_opcoes,
+            key="rm_mat_sel",
+            help="Materiais pendentes + já com rateio manual (para edição)",
+        )
+
+        # Campo livre para materiais que não aparecem na lista
+        _col_dig, _col_btn = st.columns([4, 1])
         with _col_dig:
-            _mat_digitado = st.text_input(
-                "Ou digitar código do material",
-                value="",
+            _mat_digitado_input = st.text_input(
+                "Ou digitar código do material (pressione Enter ou clique →)",
                 key="rm_mat_dig",
                 placeholder="ex: 407223",
-                help="Use este campo para materiais que não aparecem na lista",
-            ).strip()
+            )
+        with _col_btn:
+            st.write("")  # alinha verticalmente com o text_input
+            if st.button("→ Usar", key="rm_mat_dig_btn", use_container_width=True):
+                st.session_state["rm_mat_dig_ativo"] = _mat_digitado_input.strip()
+                st.rerun()
+
+        # Decide o material ativo
+        _mat_digitado = st.session_state.get("rm_mat_dig_ativo", "").strip()
+        # Limpa o ativo se o campo foi apagado
+        if not _mat_digitado_input.strip() and _mat_digitado:
+            st.session_state["rm_mat_dig_ativo"] = ""
+            _mat_digitado = ""
 
         # Campo digitado tem prioridade sobre a lista
         mat_sel = _mat_digitado if _mat_digitado else (_mat_lista if _mat_lista else None)
