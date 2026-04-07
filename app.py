@@ -2329,7 +2329,7 @@ if "resultado" in st.session_state:
                 # Session state: número de linhas do formulário
                 _linhas_key = f"rm_n_linhas_{mat_sel}"
                 if _linhas_key not in st.session_state:
-                    st.session_state[_linhas_key] = max(1, len(_existing_rows))
+                    st.session_state[_linhas_key] = max(6, len(_existing_rows))
 
                 n_linhas = st.session_state[_linhas_key]
                 linhas_form: list[dict] = []
