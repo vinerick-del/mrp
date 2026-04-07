@@ -2307,15 +2307,29 @@ if "resultado" in st.session_state:
 
         _mats_opcoes = sorted(_mats_nao_def_set | set(_mats_manual))
 
-        if not _mats_opcoes:
-            st.info("Nenhum material disponível para rateio manual.")
-        else:
-            mat_sel = st.selectbox(
-                "Selecionar material",
-                _mats_opcoes,
+        # ── Seleção de material: lista + campo livre para materiais não listados ─
+        _col_sel, _col_dig = st.columns([3, 2])
+        with _col_sel:
+            _mat_lista = st.selectbox(
+                "Selecionar da lista",
+                [""] + _mats_opcoes,
                 key="rm_mat_sel",
-                help="Materiais com NAO_DEFINIDO + materiais já com rateio manual (para edição)",
+                help="Materiais pendentes + já com rateio manual (para edição)",
             )
+        with _col_dig:
+            _mat_digitado = st.text_input(
+                "Ou digitar código do material",
+                value="",
+                key="rm_mat_dig",
+                placeholder="ex: 407223",
+                help="Use este campo para materiais que não aparecem na lista",
+            ).strip()
+
+        # Campo digitado tem prioridade sobre a lista
+        mat_sel = _mat_digitado if _mat_digitado else (_mat_lista if _mat_lista else None)
+
+        if not _mats_opcoes and not mat_sel:
+            st.info("Nenhum material disponível. Use o campo 'Digitar código' para cadastrar.")
 
             if mat_sel:
                 _desc_sel = _desc_map.get(str(mat_sel), "-")
