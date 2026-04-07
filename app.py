@@ -2537,45 +2537,51 @@ if "resultado" in st.session_state:
                         f"O Excel precisa ter uma aba com 'DFP' ou 'relatório' e outra com 'MB51'."
                     )
                 else:
-                    # ── Rateio: prioridade = resultado da sessão (derivado da demanda) ──
-                    # O df_rateio já tem as proporções aplicadas à demanda importada,
-                    # incluindo overrides manuais. Extraímos as combinações únicas
-                    # (material, departamento, programa, proporcao) de lá.
+                    # ── Rateio: prioridade 1 = derivar_rateio_da_demanda (cobre TODOS os materiais com demanda) ──
                     _rateio_cfg = pd.DataFrame()
 
-                    _df_rat_sess = r.get("rateio", pd.DataFrame())
-                    if not _df_rat_sess.empty and "proporcao_pct" in _df_rat_sess.columns:
-                        _rateio_cfg = (
-                            _df_rat_sess[_df_rat_sess["departamento"] != "NAO_DEFINIDO"]
-                            [["material", "departamento", "programa_orcamentario", "proporcao_pct"]]
-                            .drop_duplicates(["material", "departamento", "programa_orcamentario"])
-                            .rename(columns={"proporcao_pct": "proporcao"})
-                            .copy()
-                        )
-                        # proporcao_pct está em escala 0-100; converter para 0-1
-                        _rateio_cfg["proporcao"] = _rateio_cfg["proporcao"] / 100
-                        _rateio_cfg["material"]  = _rateio_cfg["material"].astype(str).str.strip()
+                    _dem_det_df = r.get("demanda_detail_df", pd.DataFrame())
+                    if not _dem_det_df.empty:
+                        # derivar_rateio_da_demanda retorna proporcao em 0-1
+                        _rateio_cfg = derivar_rateio_da_demanda(_dem_det_df)
+                        _rateio_cfg = _rateio_cfg[_rateio_cfg["departamento"] != "NAO_DEFINIDO"].copy()
+                        _rateio_cfg["material"] = _rateio_cfg["material"].astype(str).str.strip()
 
-                    # Fallback: ler rateio_base.csv + rateio_manual.csv se sessão vazia
+                    # Prioridade 2: r["rateio"] — se demanda_detail_df vazia, usa resultado MRP
                     if _rateio_cfg.empty:
-                        _rateio_base_p   = os.path.join(DIR_DADOS, "rateio_base.csv")
-                        _rateio_manual_p = os.path.join(DIR_DADOS, "rateio_manual.csv")
+                        _df_rat_sess = r.get("rateio", pd.DataFrame())
+                        if not _df_rat_sess.empty and "proporcao_pct" in _df_rat_sess.columns:
+                            _rateio_cfg = (
+                                _df_rat_sess[_df_rat_sess["departamento"] != "NAO_DEFINIDO"]
+                                [["material", "departamento", "programa_orcamentario", "proporcao_pct"]]
+                                .drop_duplicates(["material", "departamento", "programa_orcamentario"])
+                                .rename(columns={"proporcao_pct": "proporcao"})
+                                .copy()
+                            )
+                            # proporcao_pct está em escala 0-100; converter para 0-1
+                            _rateio_cfg["proporcao"] = _rateio_cfg["proporcao"] / 100
+                            _rateio_cfg["material"]  = _rateio_cfg["material"].astype(str).str.strip()
 
+                    # Prioridade 3: rateio_base.csv como último fallback
+                    if _rateio_cfg.empty:
+                        _rateio_base_p = os.path.join(DIR_DADOS, "rateio_base.csv")
                         if os.path.exists(_rateio_base_p):
                             _sep_rb = ";" if ";" in open(_rateio_base_p).read(300) else ","
                             _rateio_cfg = pd.read_csv(_rateio_base_p, sep=_sep_rb, dtype={"material": str})
 
-                        if os.path.exists(_rateio_manual_p):
-                            _rm = pd.read_csv(_rateio_manual_p, sep=";", dtype={"material": str})
-                            if not _rm.empty and "material" in _rm.columns:
-                                _rm_mats = set(_rm["material"].astype(str).str.strip().unique())
-                                _rc_base = _rateio_cfg[
-                                    ~_rateio_cfg["material"].astype(str).str.strip().isin(_rm_mats)
-                                ] if not _rateio_cfg.empty else pd.DataFrame()
-                                _rateio_cfg = pd.concat(
-                                    [_rc_base, _rm[["material","departamento","programa_orcamentario","proporcao"]]],
-                                    ignore_index=True,
-                                )
+                    # Sempre aplicar overrides do rateio_manual.csv (substitui por material)
+                    _rateio_manual_p = os.path.join(DIR_DADOS, "rateio_manual.csv")
+                    if os.path.exists(_rateio_manual_p):
+                        _rm = pd.read_csv(_rateio_manual_p, sep=";", dtype={"material": str})
+                        if not _rm.empty and "material" in _rm.columns:
+                            _rm_mats = set(_rm["material"].astype(str).str.strip().unique())
+                            _rc_base = _rateio_cfg[
+                                ~_rateio_cfg["material"].astype(str).str.strip().isin(_rm_mats)
+                            ] if not _rateio_cfg.empty else pd.DataFrame()
+                            _rateio_cfg = pd.concat(
+                                [_rc_base, _rm[["material","departamento","programa_orcamentario","proporcao"]]],
+                                ignore_index=True,
+                            )
 
                     # ── Processar ─────────────────────────────────────────────
                     _res_dfp = _processar_rateio_dfp(_aba_dfp, _aba_mb, _rateio_cfg)
