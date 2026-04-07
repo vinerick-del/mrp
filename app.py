@@ -36,7 +36,6 @@ from mrp import (
     ler_historico_mb51,
     ler_politica_pagamento,
     derivar_rateio_da_demanda,
-    passo_12_rateio,
     transformar_demanda_dtm,
     ARQUIVO_DEMANDA_RAW,
     DIR_DADOS,
@@ -191,6 +190,79 @@ def _gerar_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
                     for cell in row:
                         cell.number_format = _FMT_MOEDA_EXCEL
     return buf.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CACHE: leitores de arquivo com invalidação por mtime
+# Cada wrapper recebe _mtime como parâmetro (prefixo _ = não serializado pelo
+# cache do Streamlit), garantindo reprocessamento apenas quando o arquivo muda.
+# ─────────────────────────────────────────────────────────────────────────────
+def _mtime(path: str) -> float:
+    """Retorna mtime do arquivo ou 0 se não existir."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+@st.cache_data(show_spinner=False)
+def _cached_ler_materiais(path: str, _mtime: float) -> pd.DataFrame:
+    return ler_materiais(path)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_ler_lead_times(path: str, _mtime: float) -> dict:
+    return ler_lead_times(path)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_ler_mb51(path: str, _mtime: float) -> pd.DataFrame:
+    return ler_historico_mb51(path)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_ler_politica(path: str, _mtime: float) -> dict:
+    return ler_politica_pagamento(path)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_ler_contratos(path: str, _mtime: float) -> pd.DataFrame:
+    return ler_contratos_sap(path)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_transformar_demanda(path: str, _mtime: float) -> pd.DataFrame:
+    """Lê e transforma o arquivo de demanda DTM. Cacheado por mtime do arquivo."""
+    return transformar_demanda_dtm(path)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_passo5_abc(
+    demanda: pd.DataFrame,
+    materiais: pd.DataFrame,
+    contratos: pd.DataFrame,
+) -> pd.DataFrame:
+    """Cache ABC — recalcula apenas quando demanda/materiais/contratos mudam."""
+    return passo_5_abc(demanda, materiais, contratos=contratos if not contratos.empty else None)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_passos_6_11(
+    demanda: pd.DataFrame,
+    estoque: pd.DataFrame,
+    entradas: pd.DataFrame,
+    abc: pd.DataFrame,
+    materiais: pd.DataFrame,
+    lead_time_dias: int,
+    lt_dict_items: tuple,          # dict convertido para tuple para ser hashável
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Cache MRP core — recalcula apenas quando inputs mudam."""
+    lt_dict = dict(lt_dict_items) if lt_dict_items else None
+    return passos_6_11_mrp(
+        demanda, estoque, entradas, abc, materiais,
+        lead_time_dias=lead_time_dias,
+        lead_times_dict=lt_dict,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -688,18 +760,20 @@ if _disparar:
             os.makedirs(DIR_DADOS, exist_ok=True)
             os.makedirs(DIR_SAIDA, exist_ok=True)
 
-            # ── Carregar materiais (legado — necessário para ABC fallback) ────
+            # ── Carregar materiais (cacheado por mtime) ───────────────────────
             mat_path = os.path.join(DIR_DADOS, "materiais.csv")
-            materiais = ler_materiais(mat_path) if os.path.exists(mat_path) else pd.DataFrame(
-                columns=["material", "descricao", "valor_unitario"]
+            materiais = (
+                _cached_ler_materiais(mat_path, _mtime(mat_path))
+                if os.path.exists(mat_path)
+                else pd.DataFrame(columns=["material", "descricao", "valor_unitario"])
             )
 
-            # ── Contratos SAP (opcional) ──────────────────────────────────────
+            # ── Contratos SAP (cacheado por mtime) ───────────────────────────
             cont_path = achar_arquivo("Contratos_SAP") or achar_arquivo("contratos_sap.csv")
             contratos = pd.DataFrame()
             if cont_path:
                 try:
-                    contratos = ler_contratos_sap(cont_path)
+                    contratos = _cached_ler_contratos(cont_path, _mtime(cont_path))
                     if not contratos.empty and "saldo_contrato" in contratos.columns:
                         contratos["tipo_contrato"] = contratos["saldo_contrato"].apply(
                             lambda _s: "Acordo de Preço" if float(_s or 0) <= 1 else "Acordo de Quantidade"
@@ -707,8 +781,7 @@ if _disparar:
                 except Exception as _e_cont:
                     print(f"  ⚠ Contratos SAP não carregado ({_e_cont}) — sem verificação de saldo.")
 
-            # ── Lead Times ────────────────────────────────────────────────────
-            # Prioridade: 1) coluna LT em materiais.csv  2) arquivo LT (case-insensitive)
+            # ── Lead Times (cacheado por mtime) ──────────────────────────────
             if "lead_time_dias" in materiais.columns:
                 lt_dict = {
                     str(row["material"]): int(row["lead_time_dias"])
@@ -718,41 +791,37 @@ if _disparar:
                 print(f"  [LT] Lead times de materiais.csv: {len(lt_dict)} itens")
             else:
                 lt_path = achar_arquivo("LEAD_TIMES.csv") or achar_arquivo("lead_times.csv")
-                lt_dict = ler_lead_times(lt_path) if lt_path else {}
+                lt_dict = _cached_ler_lead_times(lt_path, _mtime(lt_path)) if lt_path else {}
                 if not lt_dict:
                     print(f"  [LT] ⚠ Nenhum lead time carregado — usando default {LEAD_TIME_DIAS}d para todos")
                     print(f"  [LT]   Colunas em materiais.csv: {list(materiais.columns)}")
 
             # ── Pipeline MRP ──────────────────────────────────────────────────
-            demanda                  = passo_1_2_demanda()
+            # passo_1_2 retorna (demanda_consolidada, demanda_detail) — lê o arquivo uma só vez
+            demanda, _demanda_detail_raw = passo_1_2_demanda()
             estoque                  = passo_3_estoque()
             entradas, df_abertos_fut = passo_4_pedidos_abertos()
-            abc                      = passo_5_abc(demanda, materiais, contratos=contratos)
-            df_mrp, df_ped           = passos_6_11_mrp(
+            abc        = _cached_passo5_abc(demanda, materiais, contratos if not contratos.empty else pd.DataFrame())
+            df_mrp, df_ped = _cached_passos_6_11(
                 demanda, estoque, entradas, abc, materiais,
-                lead_time_dias=LEAD_TIME_DIAS,
-                lead_times_dict=lt_dict or None,
+                LEAD_TIME_DIAS,
+                tuple(sorted((lt_dict or {}).items())),
             )
 
-            # Detalhe de demanda para rateio
-            raw_path = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW) if ARQUIVO_DEMANDA_RAW else None
-            demanda_detail = (
-                transformar_demanda_dtm(raw_path)
-                if raw_path and os.path.exists(raw_path)
-                else None
-            )
+            # Rateio usa o detalhe já carregado — sem segunda leitura do arquivo
+            demanda_detail     = _demanda_detail_raw if not _demanda_detail_raw.empty else None
+            _demanda_detail_df = _demanda_detail_raw
+
             df_rateio = passo_12_rateio(df_ped, df_abertos_fut, demanda_detail=demanda_detail)
-            # demanda_detail salvo para filtros de departamento/programa na Projeção de Estoque
-            _demanda_detail_df = demanda_detail if demanda_detail is not None else pd.DataFrame()
 
-            # ── Histórico MB51 (opcional) ─────────────────────────────────────
+            # ── Histórico MB51 (cacheado por mtime) ──────────────────────────
             mb51_path = achar_arquivo("historico_mb51.csv")
-            df_mb51 = ler_historico_mb51(mb51_path) if mb51_path else pd.DataFrame()
+            df_mb51 = _cached_ler_mb51(mb51_path, _mtime(mb51_path)) if mb51_path else pd.DataFrame()
 
-            # ── Política de Pagamento (opcional) ─────────────────────────────
+            # ── Política de Pagamento (cacheada por mtime) ────────────────────
             politica_path = achar_arquivo("politica_pagamento.csv") or achar_arquivo("Politica_de_pagamento")
             politica_pag_carregada: dict[str, list[int]] = (
-                ler_politica_pagamento(politica_path)
+                _cached_ler_politica(politica_path, _mtime(politica_path))
                 if politica_path else {}
             )
 

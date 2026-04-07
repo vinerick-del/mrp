@@ -21,6 +21,7 @@ Passos de processamento:
 import io
 import math
 import os
+from functools import lru_cache
 from datetime import date, timedelta
 
 import numpy as np
@@ -1199,7 +1200,11 @@ def transformar_demanda_dtm(caminho: str) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 # PASSO 1-2: LER E CONSOLIDAR DEMANDA
 # ─────────────────────────────────────────────────────────────────────────────
-def passo_1_2_demanda() -> pd.DataFrame:
+def passo_1_2_demanda() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Retorna (demanda_consolidada, demanda_detail).
+    demanda_detail contém colunas completas (material, mes, departamento,
+    programa_orcamentario, quantidade) — evita segunda leitura do arquivo.
+    """
     separador("PASSO 1-2 │ LER E CONSOLIDAR DEMANDA")
 
     # [FIX 1] Fonte única de demanda: formato DTM obrigatório.
@@ -1234,7 +1239,9 @@ def passo_1_2_demanda() -> pd.DataFrame:
     print(f"  Materiais com demanda : {demanda['material'].nunique()}")
     print(f"  Período da demanda    : {demanda['mes'].min()} → {demanda['mes'].max()}")
     print(f"  Registros consolidados: {len(demanda)}")
-    return demanda
+
+    # Retorna também o detalhe completo (com depto/prog) para reuso em rateio
+    return demanda, df_raw
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1992,44 +1999,26 @@ def passo_12_rateio(
     df_todos = pd.DataFrame(linhas_pedidos)
 
     # ── Aplicar proporções por departamento/programa ──────────────────────────
-    linhas_rateio: list[dict] = []
+    # ── Aplicar proporções via merge vetorizado (substitui nested iterrows) ──
+    _rb = rateio_base[["material", "departamento", "programa_orcamentario", "proporcao"]].copy()
+    _rb["material"] = _rb["material"].astype(str).str.strip()
+    df_todos["material"] = df_todos["material"].astype(str).str.strip()
 
-    for _, ped in df_todos.iterrows():
-        mat     = ped["material"]
-        qtd     = ped["quantidade"]
-        per_ent = ped["periodo_entrega"]
-        tipo    = ped["tipo"]
+    merged = df_todos.merge(_rb, on="material", how="left")
 
-        proporcoes = rateio_base[rateio_base["material"] == mat]
+    # Materiais sem rateio configurado → NAO_DEFINIDO com proporcao=1
+    _no_rat = merged["departamento"].isna()
+    merged.loc[_no_rat, "departamento"]          = "NAO_DEFINIDO"
+    merged.loc[_no_rat, "programa_orcamentario"] = "NAO_DEFINIDO"
+    merged.loc[_no_rat, "proporcao"]             = 1.0
 
-        if proporcoes.empty:
-            # Material sem base de rateio → destino único
-            linhas_rateio.append(
-                {
-                    "tipo"                  : tipo,
-                    "material"              : mat,
-                    "periodo_entrega"       : per_ent,
-                    "departamento"          : "NAO_DEFINIDO",
-                    "programa_orcamentario" : "NAO_DEFINIDO",
-                    "qtd_rateada"           : round(qtd, 2),
-                    "proporcao_pct"         : 100.0,
-                }
-            )
-        else:
-            for _, p in proporcoes.iterrows():
-                linhas_rateio.append(
-                    {
-                        "tipo"                  : tipo,
-                        "material"              : mat,
-                        "periodo_entrega"       : per_ent,
-                        "departamento"          : p["departamento"],
-                        "programa_orcamentario" : p["programa_orcamentario"],
-                        "qtd_rateada"           : round(qtd * p["proporcao"], 2),
-                        "proporcao_pct"         : round(p["proporcao"] * 100, 2),
-                    }
-                )
+    merged["qtd_rateada"]   = (merged["quantidade"] * merged["proporcao"]).round(2)
+    merged["proporcao_pct"] = (merged["proporcao"] * 100).round(2)
 
-    df_rateio = pd.DataFrame(linhas_rateio)
+    df_rateio = merged[
+        ["tipo", "material", "periodo_entrega", "departamento",
+         "programa_orcamentario", "qtd_rateada", "proporcao_pct"]
+    ].copy()
     salvar(df_rateio, "05_rateio_final.csv")
 
     # ── Resumo por tipo de pedido ─────────────────────────────────────────────
@@ -2284,21 +2273,19 @@ def main() -> None:
         lt_dict = ler_lead_times(lt_path) if lt_path else {}
 
     # ── Pipeline principal ────────────────────────────────────────────────────
-    demanda                   = passo_1_2_demanda()
-    estoque                   = passo_3_estoque()
-    entradas, df_abertos_fut  = passo_4_pedidos_abertos()
-    abc                       = passo_5_abc(demanda, materiais, contratos=contratos)
-    df_mrp, df_ped            = passos_6_11_mrp(
+    demanda, demanda_detail    = passo_1_2_demanda()
+    estoque                    = passo_3_estoque()
+    entradas, df_abertos_fut   = passo_4_pedidos_abertos()
+    abc                        = passo_5_abc(demanda, materiais, contratos=contratos)
+    df_mrp, df_ped             = passos_6_11_mrp(
                                     demanda, estoque, entradas, abc, materiais,
                                     lead_time_dias=LEAD_TIME_DIAS,
                                     lead_times_dict=lt_dict or None,
                                     horizonte_finito=True,
                                 )
 
-    # [FIX 1] Reutiliza o mesmo arquivo único de demanda para o rateio — sem bifurcação.
-    caminho_raw    = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW)
-    demanda_detail = transformar_demanda_dtm(caminho_raw) if os.path.exists(caminho_raw) else None
-    df_rateio = passo_12_rateio(df_ped, df_abertos_fut, demanda_detail=demanda_detail)
+    df_rateio = passo_12_rateio(df_ped, df_abertos_fut,
+                                demanda_detail=demanda_detail if not demanda_detail.empty else None)
 
     _imprimir_mrp_pivot(df_mrp)
 
