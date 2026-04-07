@@ -2294,9 +2294,18 @@ if "resultado" in st.session_state:
             _rm_df["material"].astype(str).unique().tolist()
         ) if not _rm_df.empty and "material" in _rm_df.columns else []
 
-        _mats_opcoes = sorted(set(
-            (locals().get("_mats_nao_def") or []) + _mats_manual
-        ))
+        # Materiais sem rateio: vêm de df_rateio (NAO_DEFINIDO) + demanda sem dept
+        # + qualquer material já com rateio manual (para edição)
+        _mats_nao_def_set = set(locals().get("_mats_nao_def") or [])
+
+        # Adiciona materiais da demanda que têm dept NAO_DEFINIDO ou vazio
+        if not _dd_df.empty and "material" in _dd_df.columns and "departamento" in _dd_df.columns:
+            _sem_dept = _dd_df[
+                _dd_df["departamento"].fillna("NAO_DEFINIDO").str.strip().isin(["NAO_DEFINIDO", ""])
+            ]["material"].astype(str).unique()
+            _mats_nao_def_set.update(_sem_dept)
+
+        _mats_opcoes = sorted(_mats_nao_def_set | set(_mats_manual))
 
         if not _mats_opcoes:
             st.info("Nenhum material disponível para rateio manual.")
