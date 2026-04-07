@@ -2157,6 +2157,109 @@ if "resultado" in st.session_state:
                                 height=400,
                             )
 
+                            # ── Download Excel — relatório completo (sem filtros) ──────
+                            try:
+                                import io as _io_tr
+                                # Usa df_fluxo_bruto completo, não o filtrado
+                                _dl_fluxo = df_fluxo_bruto.copy()
+                                if not _dl_fluxo.empty:
+                                    # Adiciona descrição
+                                    _dl_fluxo["descricao"] = (
+                                        _dl_fluxo["material"].astype(str).map(_desc_tr).fillna("-")
+                                    )
+                                    # Label de parcela
+                                    if "num_parcela" in _dl_fluxo.columns:
+                                        _dl_fluxo["parcela_label"] = (
+                                            _dl_fluxo["num_parcela"].astype(int).astype(str)
+                                            + "º de "
+                                            + _dl_fluxo["tot_parcelas"].astype(int).astype(str)
+                                        )
+                                    else:
+                                        _dl_fluxo["parcela_label"] = "-"
+
+                                    _dl_cols = [c for c in [
+                                        "origem", "material", "descricao",
+                                        "departamento", "programa_orcamentario",
+                                        "mes_emissao", "mes_entrega",
+                                        "parcela_label", "prazo_dias", "mes_pagamento",
+                                        "valor_pedido_total", "valor_parcela", "valor_rateado",
+                                    ] if c in _dl_fluxo.columns]
+                                    _dl_rastreio = (
+                                        _dl_fluxo[_dl_cols]
+                                        .rename(columns={
+                                            "origem"                : "Origem",
+                                            "material"              : "Material",
+                                            "descricao"             : "Descrição",
+                                            "departamento"          : "Departamento",
+                                            "programa_orcamentario" : "Programa Orçamentário",
+                                            "mes_emissao"           : "Mês Emissão",
+                                            "mes_entrega"           : "Mês Entrega",
+                                            "parcela_label"         : "Parcela",
+                                            "prazo_dias"            : "Prazo Pgto (dias)",
+                                            "mes_pagamento"         : "Mês Pagamento",
+                                            "valor_pedido_total"    : "Valor Total Pedido (R$)",
+                                            "valor_parcela"         : "Valor da Parcela (R$)",
+                                            "valor_rateado"         : "Valor Desembolso Rateado (R$)",
+                                        })
+                                        .sort_values(["Mês Pagamento", "Mês Entrega", "Mês Emissão"])
+                                        .reset_index(drop=True)
+                                    )
+
+                                    _buf_tr = _io_tr.BytesIO()
+                                    with pd.ExcelWriter(_buf_tr, engine="openpyxl") as _wr_tr:
+                                        # Aba 1: Rastreio completo linha a linha
+                                        _dl_rastreio.to_excel(
+                                            _wr_tr, sheet_name="Rastreio Completo", index=False
+                                        )
+                                        # Aba 2: Resumo por Departamento + Mês Pagamento
+                                        _grp_depto = (
+                                            _dl_fluxo
+                                            .groupby(
+                                                ["departamento", "programa_orcamentario", "mes_pagamento"],
+                                                as_index=False,
+                                            )["valor_rateado"].sum()
+                                            .rename(columns={
+                                                "departamento"          : "Departamento",
+                                                "programa_orcamentario" : "Programa Orçamentário",
+                                                "mes_pagamento"         : "Mês Pagamento",
+                                                "valor_rateado"         : "Valor Desembolso (R$)",
+                                            })
+                                            .sort_values(["Mês Pagamento", "Departamento"])
+                                        )
+                                        _grp_depto.to_excel(
+                                            _wr_tr, sheet_name="Resumo Depto-Mês", index=False
+                                        )
+                                        # Aba 3: Resumo por Material + Mês Pagamento
+                                        _grp_mat = (
+                                            _dl_fluxo
+                                            .groupby(
+                                                ["material", "departamento", "programa_orcamentario",
+                                                 "mes_pagamento"],
+                                                as_index=False,
+                                            )["valor_rateado"].sum()
+                                            .rename(columns={
+                                                "material"              : "Material",
+                                                "departamento"          : "Departamento",
+                                                "programa_orcamentario" : "Programa Orçamentário",
+                                                "mes_pagamento"         : "Mês Pagamento",
+                                                "valor_rateado"         : "Valor Desembolso (R$)",
+                                            })
+                                            .sort_values(["Mês Pagamento", "Material"])
+                                        )
+                                        _grp_mat.to_excel(
+                                            _wr_tr, sheet_name="Resumo Material-Mês", index=False
+                                        )
+
+                                    st.download_button(
+                                        label="⬇ Baixar Relatório de Desembolso (Excel)",
+                                        data=_buf_tr.getvalue(),
+                                        file_name="desembolso_rastreio.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        use_container_width=True,
+                                    )
+                            except ImportError:
+                                st.info("openpyxl não instalado — execute: pip install openpyxl")
+
             with subtab_ent:
                 st.caption(
                     f"Valor e quantidade de pedidos por mês de chegada ao estoque · {_sel_ano}"
