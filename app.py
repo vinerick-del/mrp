@@ -1841,6 +1841,7 @@ if "resultado" in st.session_state:
                             if _detail_orc.empty:
                                 st.info("Nenhum registro para este mês/origem.")
                             else:
+                                st.caption(f"🔍 DEBUG colunas: {list(_detail_orc.columns)}")
                                 _orc_dcols = [c for c in [
                                     "material", "origem",
                                     "mes_pedido", "mes_entrega",
