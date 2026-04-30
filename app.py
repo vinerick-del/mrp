@@ -3213,18 +3213,24 @@ if "resultado" in st.session_state:
             key="agenda_planner",
         )
 
-        # mapa material → planejador (normalizar ambos para string)
+        # mapa material → planejador e material → descrição
         _plan_map: dict = {}
-        if not _mat_ag.empty and "planejador" in _mat_ag.columns:
-            _plan_map = {
-                _normalize_material(m): str(p).strip()
-                for m, p in zip(_mat_ag["material"], _mat_ag["planejador"])
-            }
-            # Debug: mostrar primeiros 5 materiais e planejadores do mapa
-            _sample_map = dict(list(_plan_map.items())[:5])
-            st.caption(f"✅ Mapa planejador criado com {len(_plan_map)} materiais. Amostra: {_sample_map}")
-        else:
-            st.warning(f"⚠️ Mapa planejador vazio: _mat_ag.empty={_mat_ag.empty if 'empty' in dir(_mat_ag) else '?'}, tem 'planejador'={'planejador' in _mat_ag.columns if not _mat_ag.empty else False}")
+        _desc_map: dict = {}
+        if not _mat_ag.empty:
+            if "planejador" in _mat_ag.columns:
+                _plan_map = {
+                    _normalize_material(m): str(p).strip()
+                    for m, p in zip(_mat_ag["material"], _mat_ag["planejador"])
+                }
+                _sample_map = dict(list(_plan_map.items())[:5])
+                st.caption(f"✅ Mapa planejador criado com {len(_plan_map)} materiais. Amostra: {_sample_map}")
+            else:
+                st.warning("⚠️ Mapa planejador vazio: coluna 'planejador' não encontrada em materiais.")
+            if "descricao" in _mat_ag.columns:
+                _desc_map = {
+                    _normalize_material(m): str(d)
+                    for m, d in zip(_mat_ag["material"], _mat_ag["descricao"])
+                }
 
         # Debug: verificar materiais únicos no MRP
         if not _mrp_ag.empty:
@@ -3323,6 +3329,7 @@ if "resultado" in st.session_state:
                 _fornecedores_grupo[_forn]["pedidos"].append({
                     "numero_pedido": _r_ab.get("numero_pedido", "—"),
                     "material": _mat_f,
+                    "descricao": _desc_map.get(_mat_f, "—"),
                     "quantidade": _r_ab.get("quantidade", 0),
                     "mes_entrega": _mes_rem,
                     "valor": _r_ab.get("valor_total_pedido", 0),
@@ -3331,12 +3338,14 @@ if "resultado" in st.session_state:
             if _fornecedores_grupo:
                 for _forn, _info in sorted(_fornecedores_grupo.items()):
                     with st.expander(f"📞 {_forn} ({len(_info['pedidos'])} pedido(s)) — Planejador: {_info['planejador']}"):
-                        # Tabela com detalhes dos pedidos
+                        # Tabela com detalhes dos pedidos (inclui nome fornecedor e descrição)
                         _ped_list = []
                         for _ped in _info["pedidos"]:
                             _ped_list.append({
+                                "Fornecedor": _forn,
                                 "Nº Pedido": _ped["numero_pedido"],
                                 "Material": _ped["material"],
+                                "Descrição": _ped["descricao"],
                                 "Qtd": _ped["quantidade"],
                                 "Mês Entrega": _ped["mes_entrega"],
                                 "Valor": _ped["valor"],
@@ -3390,8 +3399,10 @@ if "resultado" in st.session_state:
                     for idx, _r_ped in _ped_forn.iterrows():
                         _mat = _normalize_material(_r_ped.get("material", ""))
                         _num_ped = _r_ped.get("numero_pedido", "—")
+                        _desc_m = _desc_map.get(_mat, "—")
+                        _label = f"{_mat} — {_desc_m} (Pedido {_num_ped})"
                         _obs_materiais[_mat] = st.text_input(
-                            f"Material {_mat} (Pedido {_num_ped})",
+                            _label,
                             placeholder="Ex: Aguardando matéria-prima fornecedor X",
                             key=f"obs_mat_{_mat}"
                         )

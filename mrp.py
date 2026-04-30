@@ -1524,6 +1524,7 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
     # Fornecedor (opcional — nem todo export ME2M inclui)
     col_forn = next((c for c in df.columns if c.lower() in (
         "nome do fornecedor", "nome forn.", "fornecedor",
+        "fornecedor/centro fornecedor", "forn./centro forn.",
         "vendor", "vendor name", "forn.",
     )), None)
     df["fornecedor"] = df[col_forn].astype(str).str.strip() if col_forn else "—"
