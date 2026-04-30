@@ -2228,8 +2228,18 @@ if "resultado" in st.session_state:
 
                                     _buf_tr = _io_tr.BytesIO()
                                     with pd.ExcelWriter(_buf_tr, engine="openpyxl") as _wr_tr:
+                                        # Formatar colunas monetárias como strings com vírgula decimal BR
+                                        def _fmt_excel_br(val):
+                                            if pd.isna(val) or val == 0:
+                                                return "-"
+                                            return f"{float(val):,.2f}".replace(",", ";").replace(".", ",").replace(";", ".")
+
                                         # Aba 1: Rastreio completo linha a linha
-                                        _dl_rastreio.to_excel(
+                                        _dl_rastreio_fmt = _dl_rastreio.copy()
+                                        for _col in ["Valor Total Pedido (R$)", "Valor da Parcela (R$)", "Valor Desembolso Rateado (R$)"]:
+                                            if _col in _dl_rastreio_fmt.columns:
+                                                _dl_rastreio_fmt[_col] = _dl_rastreio_fmt[_col].apply(_fmt_excel_br)
+                                        _dl_rastreio_fmt.to_excel(
                                             _wr_tr, sheet_name="Rastreio Completo", index=False
                                         )
                                         # Aba 2: Resumo por Departamento + Mês Pagamento
@@ -2247,7 +2257,9 @@ if "resultado" in st.session_state:
                                             })
                                             .sort_values(["Mês Pagamento", "Departamento"])
                                         )
-                                        _grp_depto.to_excel(
+                                        _grp_depto_fmt = _grp_depto.copy()
+                                        _grp_depto_fmt["Valor Desembolso (R$)"] = _grp_depto_fmt["Valor Desembolso (R$)"].apply(_fmt_excel_br)
+                                        _grp_depto_fmt.to_excel(
                                             _wr_tr, sheet_name="Resumo Depto-Mês", index=False
                                         )
                                         # Aba 3: Resumo por Material + Mês Pagamento
@@ -2267,7 +2279,9 @@ if "resultado" in st.session_state:
                                             })
                                             .sort_values(["Mês Pagamento", "Material"])
                                         )
-                                        _grp_mat.to_excel(
+                                        _grp_mat_fmt = _grp_mat.copy()
+                                        _grp_mat_fmt["Valor Desembolso (R$)"] = _grp_mat_fmt["Valor Desembolso (R$)"].apply(_fmt_excel_br)
+                                        _grp_mat_fmt.to_excel(
                                             _wr_tr, sheet_name="Resumo Material-Mês", index=False
                                         )
 
