@@ -925,6 +925,8 @@ if _disparar:
                                           "documento_referencia","numero_pedido"]])
 
             _df_fin = pd.concat(_linhas_fin, ignore_index=True) if _linhas_fin else pd.DataFrame()
+            print(f"[DEBUG] _df_fin.columns = {list(_df_fin.columns)}")
+            print(f"[DEBUG] _df_fin tem 'quantidade'? {'quantidade' in _df_fin.columns}")
 
             # Visão Orçamentária
             _vis_orc = pd.DataFrame()
@@ -1023,6 +1025,9 @@ if _disparar:
                 merged["programa_orcamentario"] = merged["programa_orcamentario"].fillna("NÃO DEFINIDO")
                 merged["proporcao"]             = merged["proporcao"].fillna(1.0)
                 merged["valor_rateado"]         = (merged[col_valor] * merged["proporcao"]).round(2)
+                # Garantir que quantidade está presente (para detalhes dos pedidos)
+                if "quantidade" not in merged.columns and "quantidade" in df.columns:
+                    merged["quantidade"] = df["quantidade"]
                 return merged
 
             _df_fin_bruto   = _aplicar_rateio_fin(_df_fin, "valor_pedido")
