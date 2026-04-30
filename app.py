@@ -63,6 +63,16 @@ st.caption(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPER: NORMALIZAÇÃO DE CÓDIGOS DE MATERIAL
+# ─────────────────────────────────────────────────────────────────────────────
+def _normalize_material(m):
+    """Normaliza código de material: converte para string e remove espaços.
+    Mantém a forma original (inclusive zeros à esquerda) para preservar
+    compatibilidade com códigos SAP que podem ter significado numérico."""
+    return str(m).strip() if pd.notna(m) else ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPERS DE PERSISTÊNCIA
 # ─────────────────────────────────────────────────────────────────────────────
 _ARQUIVOS_MAPA = {
@@ -3188,10 +3198,10 @@ if "resultado" in st.session_state:
         # mapa material → planejador (normalizar ambos para string)
         _plan_map: dict = {}
         if not _mat_ag.empty and "planejador" in _mat_ag.columns:
-            _plan_map = dict(zip(
-                _mat_ag["material"].astype(str).str.strip(),
-                _mat_ag["planejador"].astype(str).str.strip()
-            ))
+            _plan_map = {
+                _normalize_material(m): str(p).strip()
+                for m, p in zip(_mat_ag["material"], _mat_ag["planejador"])
+            }
             # Debug: mostrar primeiros 5 materiais e planejadores do mapa
             _sample_map = dict(list(_plan_map.items())[:5])
             st.caption(f"✅ Mapa planejador criado com {len(_plan_map)} materiais. Amostra: {_sample_map}")
@@ -3200,10 +3210,10 @@ if "resultado" in st.session_state:
 
         # Debug: verificar materiais únicos no MRP
         if not _mrp_ag.empty:
-            _mrp_mats = _mrp_ag["material"].astype(str).str.strip().unique()[:5]
-            st.caption(f"🔍 Primeiros 5 materiais do MRP: {list(_mrp_mats)}")
+            _mrp_mats = [_normalize_material(m) for m in _mrp_ag["material"].unique()][:5]
+            st.caption(f"🔍 Primeiros 5 materiais do MRP: {_mrp_mats}")
             # Verificar se algum material do MRP está no mapa
-            _mrp_all = _mrp_ag["material"].astype(str).str.strip().unique()
+            _mrp_all = [_normalize_material(m) for m in _mrp_ag["material"].unique()]
             _found = sum(1 for m in _mrp_all if m in _plan_map)
             st.caption(f"📊 {_found}/{len(_mrp_all)} materiais do MRP encontrados no mapa de planejadores")
         else:
@@ -3221,7 +3231,7 @@ if "resultado" in st.session_state:
         _urgentes = []
         if not _mrp_ag.empty and "necessidade" in _mrp_ag.columns:
             for _mat_u, _grp_u in _mrp_ag.groupby("material"):
-                _mat_u_str = str(_mat_u).strip()
+                _mat_u_str = _normalize_material(_mat_u)
                 _plan_u = _plan_map.get(_mat_u_str, "—")
                 if _plan_sel != "Todos" and _plan_u != _plan_sel:
                     continue
@@ -3230,9 +3240,14 @@ if "resultado" in st.session_state:
                 if _nec.empty:
                     continue
                 _mes_nec = _nec["mes"].min()
-                _lt = int(_mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str, "lead_time_dias"].values[0]) \
-                    if not _mat_ag.empty and "lead_time_dias" in _mat_ag.columns \
-                    and len(_mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str]) > 0 else 60
+                # Buscar lead_time usando matching normalizado
+                _mat_idx = [i for i, m in enumerate(_mat_ag["material"].apply(_normalize_material)) if m == _mat_u_str]
+                _lt = 60
+                if _mat_idx and "lead_time_dias" in _mat_ag.columns:
+                    try:
+                        _lt = int(_mat_ag.iloc[_mat_idx[0]]["lead_time_dias"])
+                    except (ValueError, IndexError, TypeError):
+                        _lt = 60
                 try:
                     _data_nec = pd.Period(_mes_nec, "M").to_timestamp()
                     _dias_ate_nec = (_data_nec - pd.Timestamp.today()).days
@@ -3240,9 +3255,12 @@ if "resultado" in st.session_state:
                 except Exception:
                     _urgente = False
                 if _urgente:
-                    _desc_u = _mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str, "descricao"].values[0] \
-                        if not _mat_ag.empty and "descricao" in _mat_ag.columns \
-                        and len(_mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str]) > 0 else "-"
+                    _desc_u = "-"
+                    if _mat_idx and "descricao" in _mat_ag.columns:
+                        try:
+                            _desc_u = _mat_ag.iloc[_mat_idx[0]]["descricao"] or "-"
+                        except (ValueError, IndexError):
+                            _desc_u = "-"
                     _urgentes.append({
                         "Material"   : _mat_u_str,
                         "Descrição"  : _desc_u,
@@ -3268,12 +3286,12 @@ if "resultado" in st.session_state:
         _fup_rows = []
         if not _ab_ag.empty:
             for _, _r_ab in _ab_ag.iterrows():
-                _mat_f = str(_r_ab.get("material", "")).strip()
+                _mat_f = _normalize_material(_r_ab.get("material", ""))
                 _plan_f = _plan_map.get(_mat_f, "—")
                 if _plan_sel != "Todos" and _plan_f != _plan_sel:
                     continue
                 # Último status registrado
-                _hist_mat = _hist_ag[_hist_ag["material"] == _mat_f] if not _hist_ag.empty else pd.DataFrame()
+                _hist_mat = _hist_ag[_hist_ag["material"].apply(_normalize_material) == _mat_f] if not _hist_ag.empty else pd.DataFrame()
                 _ult_status = _hist_mat.sort_values("data_atualizacao").iloc[-1] if not _hist_mat.empty else None
                 _mes_rem = str(_r_ab.get("mes_remessa") or _r_ab.get("mes_entrega", "-"))
                 _fup_rows.append({
