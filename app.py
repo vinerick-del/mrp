@@ -296,30 +296,48 @@ _STATUS_ABERTOS = {"Emitido", "Cotação", "Fabricando", "Embarque", "Em Trânsi
 
 
 def _carregar_status_pedidos() -> pd.DataFrame:
-    """Retorna histórico completo de status de pedidos."""
+    """Retorna histórico completo de ligações (agrupadas por fornecedor)."""
     if not os.path.exists(_STATUS_PEDIDOS_PATH):
         return pd.DataFrame(columns=[
-            "id", "numero_pedido", "material", "planejador",
-            "status", "data_atualizacao", "observacao",
+            "id_ligacao", "fornecedor", "planejador", "data_ligacao",
+            "numero_pedido", "material", "status", "observacao_geral", "observacao_item"
         ])
-    df = pd.read_csv(_STATUS_PEDIDOS_PATH, sep=";", dtype={"material": str, "id": str})
+    df = pd.read_csv(_STATUS_PEDIDOS_PATH, sep=";", dtype={
+        "material": str, "numero_pedido": str, "id_ligacao": str
+    })
     return df.fillna("")
 
 
-def _salvar_status_pedido(numero_pedido: str, material: str, planejador: str,
-                           status: str, observacao: str) -> None:
-    """Acrescenta uma linha de status ao histórico."""
+def _salvar_ligacao_fornecedor(fornecedor: str, planejador: str, pedidos_materiais: list[dict],
+                                observacao_geral: str = "") -> None:
+    """
+    Salva uma ligação com fornecedor (agrupada).
+
+    Args:
+        fornecedor: nome do fornecedor
+        planejador: planejador que fez a ligação
+        pedidos_materiais: lista de dicts com {numero_pedido, material, status}
+        observacao_geral: observação geral que vale para toda ligação
+    """
     df = _carregar_status_pedidos()
-    novo_id = str(int(df["id"].replace("", "0").astype(float).max() + 1)) if not df.empty else "1"
-    nova = pd.DataFrame([{
-        "id"               : novo_id,
-        "numero_pedido"    : str(numero_pedido).strip(),
-        "material"         : str(material).strip(),
-        "planejador"       : str(planejador).strip(),
-        "status"           : status,
-        "data_atualizacao" : datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "observacao"       : observacao.strip(),
-    }])
+    id_ligacao = str(int(df["id_ligacao"].replace("", "0").astype(float).max() + 1)) if not df.empty else "1"
+    data_ligacao = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    linhas = []
+    for item in pedidos_materiais:
+        linhas.append({
+            "id_ligacao"       : id_ligacao,
+            "fornecedor"       : fornecedor.strip(),
+            "planejador"       : planejador.strip(),
+            "data_ligacao"     : data_ligacao,
+            "numero_pedido"    : str(item.get("numero_pedido", "")).strip(),
+            "material"         : str(item.get("material", "")).strip(),
+            "status"           : item.get("status", "").strip(),
+            "observacao_geral" : observacao_geral.strip(),
+            "observacao_item"  : item.get("observacao_item", "").strip(),
+        })
+
+    nova = pd.DataFrame(linhas)
     df = pd.concat([df, nova], ignore_index=True)
     os.makedirs(DIR_DADOS, exist_ok=True)
     df.to_csv(_STATUS_PEDIDOS_PATH, sep=";", index=False)
@@ -3279,82 +3297,190 @@ if "resultado" in st.session_state:
 
         st.divider()
 
-        # ── Seção 2: Follow-up de Pedidos Abertos ──────────────────────────
-        st.markdown("### 🟡 Follow-up — Pedidos em Andamento")
+        # ── Seção 2: Follow-up de Pedidos Abertos (agrupado por fornecedor) ──
+        st.markdown("### 🟡 Follow-up — Pedidos em Andamento (por Fornecedor)")
+        st.caption("Agrupa todos os pedidos/materiais de um fornecedor para fazer uma ligação eficiente.")
 
-        # Montar lista de pedidos abertos (SAP + MRP gerados ainda não entregues)
-        _fup_rows = []
         if not _ab_ag.empty:
+            # Agrupar por fornecedor
+            _fornecedores_grupo = {}
             for _, _r_ab in _ab_ag.iterrows():
+                _forn = _r_ab.get("fornecedor", "—")
                 _mat_f = _normalize_material(_r_ab.get("material", ""))
                 _plan_f = _plan_map.get(_mat_f, "—")
+
+                # Filtrar por planejador se selecionado
                 if _plan_sel != "Todos" and _plan_f != _plan_sel:
                     continue
-                # Último status registrado
-                _hist_mat = _hist_ag[_hist_ag["material"].apply(_normalize_material) == _mat_f] if not _hist_ag.empty else pd.DataFrame()
-                _ult_status = _hist_mat.sort_values("data_atualizacao").iloc[-1] if not _hist_mat.empty else None
+
+                if _forn not in _fornecedores_grupo:
+                    _fornecedores_grupo[_forn] = {
+                        "planejador": _plan_f,
+                        "pedidos": []
+                    }
+
                 _mes_rem = str(_r_ab.get("mes_remessa") or _r_ab.get("mes_entrega", "-"))
-                _fup_rows.append({
-                    "Material"      : _mat_f,
-                    "Planejador"    : _plan_f,
-                    "Qtd Pendente"  : _r_ab.get("quantidade", 0),
-                    "Mês Entrega"   : _mes_rem,
-                    "Último Status" : _ult_status["status"] if _ult_status is not None else "Sem registro",
-                    "Última Obs."   : _ult_status["observacao"] if _ult_status is not None else "-",
-                    "Última Atualiz.": _ult_status["data_atualizacao"] if _ult_status is not None else "-",
+                _fornecedores_grupo[_forn]["pedidos"].append({
+                    "numero_pedido": _r_ab.get("numero_pedido", "—"),
+                    "material": _mat_f,
+                    "quantidade": _r_ab.get("quantidade", 0),
+                    "mes_entrega": _mes_rem,
+                    "valor": _r_ab.get("valor_total_pedido", 0),
                 })
 
-        if _fup_rows:
-            _df_fup = pd.DataFrame(_fup_rows).sort_values(["Planejador", "Mês Entrega"])
-            st.dataframe(_df_fup, use_container_width=True, height=320)
+            if _fornecedores_grupo:
+                for _forn, _info in sorted(_fornecedores_grupo.items()):
+                    with st.expander(f"📞 {_forn} ({len(_info['pedidos'])} pedido(s)) — Planejador: {_info['planejador']}"):
+                        # Tabela com detalhes dos pedidos
+                        _ped_list = []
+                        for _ped in _info["pedidos"]:
+                            _ped_list.append({
+                                "Nº Pedido": _ped["numero_pedido"],
+                                "Material": _ped["material"],
+                                "Qtd": _ped["quantidade"],
+                                "Mês Entrega": _ped["mes_entrega"],
+                                "Valor": _ped["valor"],
+                            })
+                        _df_ped = pd.DataFrame(_ped_list)
+                        st.dataframe(_df_ped, use_container_width=True, height=200)
+
+                        # Última ligação com este fornecedor
+                        _lig_forn = _hist_ag[_hist_ag["fornecedor"] == _forn] if not _hist_ag.empty else pd.DataFrame()
+                        if not _lig_forn.empty:
+                            _ult_lig = _lig_forn.sort_values("data_ligacao").iloc[-1]
+                            st.caption(f"📌 Última ligação: {_ult_lig.get('data_ligacao', '-')} | Status: {_ult_lig.get('status', '-')} | Obs: {_ult_lig.get('observacao_geral', '-')}")
+                        else:
+                            st.caption("📌 Nenhuma ligação registrada ainda para este fornecedor")
+            else:
+                st.info("ℹ️ Nenhum pedido aberto encontrado para os filtros selecionados.")
         else:
             st.info("ℹ️ Nenhum pedido SAP aberto encontrado.")
 
         st.divider()
 
-        # ── Seção 3: Registrar Status / Observação ─────────────────────────
-        st.markdown("### 📝 Registrar Contato com Fornecedor")
-        with st.form("form_status_pedido", clear_on_submit=True):
-            _col_s1, _col_s2 = st.columns(2)
-            with _col_s1:
-                _sp_num  = st.text_input("Nº do Pedido / Contrato", placeholder="ex: 4500012345")
-                _sp_mat  = st.text_input("Código do Material",       placeholder="ex: 402161")
-                _sp_plan = st.selectbox("Planejador", _planejs if _planejs else ["—"], key="sp_plan")
-            with _col_s2:
-                _sp_status = st.selectbox("Status", _STATUS_OPCOES,  key="sp_status")
-                _sp_obs    = st.text_area("Observações da ligação",   height=120,
-                                          placeholder="Fornecedor confirmou fabricação para 20/05. Próximo contato em 10 dias.")
-            _sp_submit = st.form_submit_button("💾 Salvar Registro", use_container_width=True)
-            if _sp_submit:
-                if not _sp_num.strip() or not _sp_mat.strip():
-                    st.error("Informe o Nº do Pedido e o Código do Material.")
+        # ── Seção 3: Registrar Ligação com Fornecedor ──────────────────────
+        st.markdown("### 📞 Registrar Ligação com Fornecedor")
+        st.caption("Registre uma ligação: uma observação geral que vale para toda a ligação + observações específicas por material (opcional).")
+
+        with st.form("form_ligacao_fornecedor", clear_on_submit=True):
+            _col_l1, _col_l2 = st.columns(2)
+
+            # Selecionar fornecedor
+            _fornecedores_list = sorted(_ab_ag["fornecedor"].unique().tolist()) if not _ab_ag.empty else []
+            with _col_l1:
+                _sp_forn = st.selectbox("🏭 Fornecedor", _fornecedores_list if _fornecedores_list else ["—"], key="sp_forn")
+
+            with _col_l2:
+                _sp_plan = st.selectbox("👤 Planejador", _planejs if _planejs else ["—"], key="sp_plan_lig")
+
+            # Observação geral (para toda a ligação)
+            _sp_obs_geral = st.text_area(
+                "📌 Observação Geral (vale para toda a ligação com o fornecedor)",
+                height=100,
+                placeholder="Ex: Fornecedor confirmou atraso de 10 dias. Próximo contato em 5 dias para confirmar entrega.",
+                key="sp_obs_geral"
+            )
+
+            # Listar pedidos/materiais do fornecedor selecionado para registrar observações individuais
+            if _sp_forn and _sp_forn != "—":
+                _ped_forn = _ab_ag[_ab_ag["fornecedor"] == _sp_forn]
+                if not _ped_forn.empty:
+                    st.markdown("#### Observações por Material (opcional):")
+                    _obs_materiais = {}
+                    for idx, _r_ped in _ped_forn.iterrows():
+                        _mat = _normalize_material(_r_ped.get("material", ""))
+                        _num_ped = _r_ped.get("numero_pedido", "—")
+                        _obs_materiais[_mat] = st.text_input(
+                            f"Material {_mat} (Pedido {_num_ped})",
+                            placeholder="Ex: Aguardando matéria-prima fornecedor X",
+                            key=f"obs_mat_{_mat}"
+                        )
+            else:
+                _obs_materiais = {}
+
+            # Status geral (para todos os pedidos do fornecedor)
+            _sp_status_lig = st.selectbox("📊 Status da Ligação", _STATUS_OPCOES, key="sp_status_lig")
+
+            _sp_submit_lig = st.form_submit_button("💾 Salvar Ligação", use_container_width=True)
+            if _sp_submit_lig:
+                if not _sp_forn or _sp_forn == "—":
+                    st.error("Selecione um fornecedor.")
+                elif not _sp_obs_geral.strip():
+                    st.error("Preencha a observação geral da ligação.")
                 else:
-                    _salvar_status_pedido(_sp_num, _sp_mat, _sp_plan, _sp_status, _sp_obs)
-                    st.success(f"✅ Registro salvo: {_sp_mat} → {_sp_status}")
+                    # Preparar lista de pedidos/materiais com suas observações
+                    _ped_info = []
+                    if _sp_forn and _sp_forn != "—":
+                        _ped_forn = _ab_ag[_ab_ag["fornecedor"] == _sp_forn]
+                        for _, _r_ped in _ped_forn.iterrows():
+                            _mat = _normalize_material(_r_ped.get("material", ""))
+                            _ped_info.append({
+                                "numero_pedido": _r_ped.get("numero_pedido", ""),
+                                "material": _mat,
+                                "status": _sp_status_lig,
+                                "observacao_item": _obs_materiais.get(_mat, ""),
+                            })
+
+                    _salvar_ligacao_fornecedor(_sp_forn, _sp_plan, _ped_info, _sp_obs_geral)
+                    st.success(f"✅ Ligação registrada com {_sp_forn} ({len(_ped_info)} itens)")
                     st.rerun()
 
         st.divider()
 
-        # ── Seção 4: Histórico de Registros ────────────────────────────────
-        with st.expander("📜 Histórico Completo de Registros"):
+        # ── Seção 4: Histórico de Ligações (agrupado por fornecedor) ───────
+        with st.expander("📜 Histórico de Ligações com Fornecedores"):
             _hist_view = _carregar_status_pedidos()
-            if _plan_sel != "Todos" and not _hist_view.empty:
-                _hist_view = _hist_view[_hist_view["planejador"] == _plan_sel]
             if not _hist_view.empty:
-                st.dataframe(
-                    _hist_view.sort_values("data_atualizacao", ascending=False)
-                    .reset_index(drop=True),
-                    use_container_width=True,
-                    height=350,
-                )
-                _buf_hist = io.BytesIO()
-                with pd.ExcelWriter(_buf_hist, engine="openpyxl") as _wr_hist:
-                    _hist_view.to_excel(_wr_hist, index=False, sheet_name="Histórico")
-                st.download_button(
-                    "⬇ Exportar Histórico (Excel)",
-                    data=_buf_hist.getvalue(),
-                    file_name="historico_pedidos.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                # Filtrar por planejador se selecionado
+                if _plan_sel != "Todos":
+                    _hist_view = _hist_view[_hist_view["planejador"] == _plan_sel]
+
+                if not _hist_view.empty:
+                    # Agrupar por fornecedor e data de ligação
+                    _fornecedores_hist = {}
+                    for _, _row in _hist_view.sort_values("data_ligacao", ascending=False).iterrows():
+                        _forn_h = _row.get("fornecedor", "—")
+                        _data_h = _row.get("data_ligacao", "—")
+                        if _forn_h not in _fornecedores_hist:
+                            _fornecedores_hist[_forn_h] = {}
+                        if _data_h not in _fornecedores_hist[_forn_h]:
+                            _fornecedores_hist[_forn_h][_data_h] = []
+                        _fornecedores_hist[_forn_h][_data_h].append(_row)
+
+                    # Exibir por fornecedor
+                    for _forn_h in sorted(_fornecedores_hist.keys()):
+                        with st.expander(f"🏭 {_forn_h}"):
+                            for _data_h in sorted(_fornecedores_hist[_forn_h].keys(), reverse=True):
+                                _linhas_lig = _fornecedores_hist[_forn_h][_data_h]
+                                _obs_geral = _linhas_lig[0].get("observacao_geral", "") if _linhas_lig else ""
+                                _planejador_lig = _linhas_lig[0].get("planejador", "—") if _linhas_lig else "—"
+
+                                st.markdown(f"**{_data_h}** | Planejador: {_planejador_lig}")
+                                if _obs_geral:
+                                    st.info(f"📌 {_obs_geral}")
+
+                                # Listar itens da ligação
+                                _itens_lig = []
+                                for _lig in _linhas_lig:
+                                    _itens_lig.append({
+                                        "Pedido": _lig.get("numero_pedido", "—"),
+                                        "Material": _lig.get("material", "—"),
+                                        "Status": _lig.get("status", "—"),
+                                        "Obs. Item": _lig.get("observacao_item", "—") or "—",
+                                    })
+                                if _itens_lig:
+                                    st.dataframe(pd.DataFrame(_itens_lig), use_container_width=True)
+                                st.divider()
+
+                    # Botão para exportar histórico
+                    _buf_hist = io.BytesIO()
+                    with pd.ExcelWriter(_buf_hist, engine="openpyxl") as _wr_hist:
+                        _hist_view.to_excel(_wr_hist, index=False, sheet_name="Histórico")
+                    st.download_button(
+                        "⬇ Exportar Histórico (Excel)",
+                        data=_buf_hist.getvalue(),
+                        file_name="historico_ligacoes.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             else:
                 st.info("ℹ️ Nenhum registro ainda.")
