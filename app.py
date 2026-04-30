@@ -3394,17 +3394,19 @@ if "resultado" in st.session_state:
             if _sp_forn and _sp_forn != "—":
                 _ped_forn = _ab_ag[_ab_ag["fornecedor"] == _sp_forn]
                 if not _ped_forn.empty:
-                    st.markdown("#### Observações por Material (opcional):")
+                    st.markdown("#### Observações por Pedido/Material (opcional):")
                     _obs_materiais = {}
-                    for idx, _r_ped in _ped_forn.iterrows():
+                    for idx, (_row_idx, _r_ped) in enumerate(_ped_forn.iterrows()):
                         _mat = _normalize_material(_r_ped.get("material", ""))
                         _num_ped = _r_ped.get("numero_pedido", "—")
                         _desc_m = _desc_map.get(_mat, "—")
                         _label = f"{_mat} — {_desc_m} (Pedido {_num_ped})"
-                        _obs_materiais[_mat] = st.text_input(
+                        # Usar índice para garantir key única quando mesmo material em múltiplos pedidos
+                        _unique_key = f"obs_mat_{idx}_{_mat}_{_num_ped}"
+                        _obs_materiais[(idx, _mat, _num_ped)] = st.text_input(
                             _label,
                             placeholder="Ex: Aguardando matéria-prima fornecedor X",
-                            key=f"obs_mat_{_mat}"
+                            key=_unique_key
                         )
             else:
                 _obs_materiais = {}
@@ -3423,13 +3425,16 @@ if "resultado" in st.session_state:
                     _ped_info = []
                     if _sp_forn and _sp_forn != "—":
                         _ped_forn = _ab_ag[_ab_ag["fornecedor"] == _sp_forn]
-                        for _, _r_ped in _ped_forn.iterrows():
+                        for _idx, (_r_idx, _r_ped) in enumerate(_ped_forn.iterrows()):
                             _mat = _normalize_material(_r_ped.get("material", ""))
+                            _num_ped = _r_ped.get("numero_pedido", "")
+                            # Buscar observação usando a chave composta
+                            _obs_item = _obs_materiais.get((_idx, _mat, _num_ped), "")
                             _ped_info.append({
-                                "numero_pedido": _r_ped.get("numero_pedido", ""),
+                                "numero_pedido": _num_ped,
                                 "material": _mat,
                                 "status": _sp_status_lig,
-                                "observacao_item": _obs_materiais.get(_mat, ""),
+                                "observacao_item": _obs_item,
                             })
 
                     _salvar_ligacao_fornecedor(_sp_forn, _sp_plan, _ped_info, _sp_obs_geral)
