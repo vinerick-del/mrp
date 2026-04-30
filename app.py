@@ -971,6 +971,7 @@ if _disparar:
                         _parcelas.append({
                             "origem"              : _row["origem"],
                             "material"            : _row["material"],
+                            "quantidade"          : _row.get("quantidade", 0),
                             "mes_emissao"         : _row.get("mes_pedido", "-"),
                             "mes_entrega"         : _row.get("mes_entrega", "-"),
                             "prazo_dias"          : _d,
@@ -1843,6 +1844,7 @@ if "resultado" in st.session_state:
                                 _orc_dcols = [c for c in [
                                     "material", "origem",
                                     "mes_pedido", "mes_entrega",
+                                    "quantidade",
                                     "departamento", "programa_orcamentario",
                                     "valor_rateado",
                                 ] if c in _detail_orc.columns]
@@ -1853,6 +1855,7 @@ if "resultado" in st.session_state:
                                         "origem"                : "Origem",
                                         "mes_pedido"            : "Mês Emissão",
                                         "mes_entrega"           : "Mês Chegada",
+                                        "quantidade"            : "Qtd",
                                         "departamento"          : "Departamento",
                                         "programa_orcamentario" : "Programa",
                                         "valor_rateado"         : "Valor Rateado",
@@ -1861,13 +1864,15 @@ if "resultado" in st.session_state:
                                     .reset_index(drop=True)
                                 )
                                 _tot_orc = _detail_orc_show["Valor Rateado"].sum()
+                                _qtd_orc = int(_detail_orc_show["Qtd"].sum()) if "Qtd" in _detail_orc_show.columns else 0
                                 st.caption(
                                     f"{len(_detail_orc_show)} linha(s) · "
+                                    f"Qtd total: **{_qtd_orc:,} un.** · "
                                     f"Total: **{_fmt_brl_contabil(_tot_orc)}**"
                                 )
                                 st.dataframe(
                                     _detail_orc_show.style.format(
-                                        {"Valor Rateado": _fmt_brl_contabil}, na_rep="-"
+                                        {"Valor Rateado": _fmt_brl_contabil, "Qtd": "{:,.0f}"}, na_rep="-"
                                     ),
                                     use_container_width=True,
                                     height=380,
@@ -2052,6 +2057,7 @@ if "resultado" in st.session_state:
                                     "material", "origem",
                                     "mes_emissao",        # data geração pedido
                                     "mes_entrega",        # data chegada do material
+                                    "quantidade",         # quantidade do pedido
                                     "Parcela",            # 1º de 2, 2º de 2, ...
                                     "prazo_dias",         # prazo de pagamento
                                     "mes_pagamento",      # data desembolso
@@ -2067,6 +2073,7 @@ if "resultado" in st.session_state:
                                         "origem"                : "Origem",
                                         "mes_emissao"           : "Data Emissão PO",
                                         "mes_entrega"           : "Data Chegada",
+                                        "quantidade"            : "Qtd",
                                         "prazo_dias"            : "Prazo Pgto (dias)",
                                         "mes_pagamento"         : "Data Desembolso",
                                         "departamento"          : "Departamento",
@@ -2081,9 +2088,13 @@ if "resultado" in st.session_state:
                                 _fmt_cx = {c: _fmt_brl_contabil for c in [
                                     "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
                                 ] if c in _detail_cx_show.columns}
+                                if "Qtd" in _detail_cx_show.columns:
+                                    _fmt_cx["Qtd"] = "{:,.0f}"
                                 _tot_cx = _detail_cx_show["Valor Parcela Rateado"].sum() if "Valor Parcela Rateado" in _detail_cx_show.columns else 0.0
+                                _qtd_cx = int(_detail_cx_show["Qtd"].sum()) if "Qtd" in _detail_cx_show.columns else 0
                                 st.caption(
                                     f"{len(_detail_cx_show)} parcela(s) · "
+                                    f"Qtd total: **{_qtd_cx:,} un.** · "
                                     f"Total rateado: **{_fmt_brl_contabil(_tot_cx)}**"
                                 )
                                 st.dataframe(
@@ -2124,7 +2135,7 @@ if "resultado" in st.session_state:
 
                             _trace_cols = [c for c in [
                                 "origem", "material", "descricao", "departamento", "programa_orcamentario",
-                                "mes_emissao", "mes_entrega",
+                                "mes_emissao", "mes_entrega", "quantidade",
                                 "parcela_label", "prazo_dias", "mes_pagamento",
                                 "valor_pedido_total", "valor_parcela", "valor_rateado",
                             ] if c in _fluxo_trace.columns]
@@ -2138,6 +2149,7 @@ if "resultado" in st.session_state:
                                     "programa_orcamentario" : "Programa",
                                     "mes_emissao"           : "Mês Emissão",
                                     "mes_entrega"           : "Mês Entrega",
+                                    "quantidade"            : "Qtd",
                                     "parcela_label"         : "Parcela",
                                     "prazo_dias"            : "Prazo (dias)",
                                     "mes_pagamento"         : "Mês Pagamento",
@@ -2151,6 +2163,8 @@ if "resultado" in st.session_state:
                             _fmt_trace = {c: _fmt_brl_contabil for c in [
                                 "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
                             ] if c in df_trace.columns}
+                            if "Qtd" in df_trace.columns:
+                                _fmt_trace["Qtd"] = "{:,.0f}"
                             st.dataframe(
                                 df_trace.style.format(_fmt_trace, na_rep="-"),
                                 use_container_width=True,
@@ -2180,7 +2194,7 @@ if "resultado" in st.session_state:
                                     _dl_cols = [c for c in [
                                         "origem", "material", "descricao",
                                         "departamento", "programa_orcamentario",
-                                        "mes_emissao", "mes_entrega",
+                                        "mes_emissao", "mes_entrega", "quantidade",
                                         "parcela_label", "prazo_dias", "mes_pagamento",
                                         "valor_pedido_total", "valor_parcela", "valor_rateado",
                                     ] if c in _dl_fluxo.columns]
@@ -2194,6 +2208,7 @@ if "resultado" in st.session_state:
                                             "programa_orcamentario" : "Programa Orçamentário",
                                             "mes_emissao"           : "Mês Emissão",
                                             "mes_entrega"           : "Mês Entrega",
+                                            "quantidade"            : "Quantidade",
                                             "parcela_label"         : "Parcela",
                                             "prazo_dias"            : "Prazo Pgto (dias)",
                                             "mes_pagamento"         : "Mês Pagamento",
