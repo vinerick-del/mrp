@@ -1011,6 +1011,10 @@ if _disparar:
             def _aplicar_rateio_fin(df: pd.DataFrame, col_valor: str) -> pd.DataFrame:
                 if df.empty:
                     return pd.DataFrame()
+                # Normaliza coluna de valor: converte strings SAP "R$ 72.090,00" → float
+                _val_num = _to_numeric_sap(df[col_valor].astype(str))
+                df = df.copy()
+                df[col_valor] = _val_num
                 if _base_rateio.empty:
                     out = df.copy()
                     out["departamento"]          = "NÃO DEFINIDO"
@@ -1023,9 +1027,6 @@ if _disparar:
                 merged["programa_orcamentario"] = merged["programa_orcamentario"].fillna("NÃO DEFINIDO")
                 merged["proporcao"]             = merged["proporcao"].fillna(1.0)
                 merged["valor_rateado"]         = (merged[col_valor] * merged["proporcao"]).round(2)
-                # Garantir que quantidade está presente (para detalhes dos pedidos)
-                if "quantidade" not in merged.columns and "quantidade" in df.columns:
-                    merged["quantidade"] = df["quantidade"]
                 return merged
 
             _df_fin_bruto   = _aplicar_rateio_fin(_df_fin, "valor_pedido")
@@ -1874,13 +1875,12 @@ if "resultado" in st.session_state:
                                     f"Total: **{_fmt_brl_contabil(_tot_orc)}**"
                                 )
                                 st.dataframe(
-                                    _detail_orc_show,
+                                    _detail_orc_show.style.format(
+                                        {"Valor Rateado": _fmt_brl_contabil, "Qtd": "{:,.0f}"},
+                                        na_rep="-",
+                                    ),
                                     use_container_width=True,
                                     height=380,
-                                    column_config={
-                                        "Valor Rateado": st.column_config.NumberColumn("Valor Rateado", format="R$ %.2f"),
-                                        "Qtd"          : st.column_config.NumberColumn("Qtd", format="%d un."),
-                                    },
                                 )
 
             with subtab_cx:
@@ -2097,16 +2097,15 @@ if "resultado" in st.session_state:
                                     f"Qtd total: **{_qtd_cx:,} un.** · "
                                     f"Total rateado: **{_fmt_brl_contabil(_tot_cx)}**"
                                 )
+                                _fmt_cx = {c: _fmt_brl_contabil for c in [
+                                    "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
+                                ] if c in _detail_cx_show.columns}
+                                if "Qtd" in _detail_cx_show.columns:
+                                    _fmt_cx["Qtd"] = "{:,.0f}"
                                 st.dataframe(
-                                    _detail_cx_show,
+                                    _detail_cx_show.style.format(_fmt_cx, na_rep="-"),
                                     use_container_width=True,
                                     height=380,
-                                    column_config={
-                                        "Valor Total Pedido"    : st.column_config.NumberColumn("Valor Total Pedido", format="R$ %.2f"),
-                                        "Valor da Parcela"      : st.column_config.NumberColumn("Valor da Parcela", format="R$ %.2f"),
-                                        "Valor Parcela Rateado" : st.column_config.NumberColumn("Valor Parcela Rateado", format="R$ %.2f"),
-                                        "Qtd"                   : st.column_config.NumberColumn("Qtd", format="%d un."),
-                                    },
                                 )
 
                     # ── Rastreio completo: Emissão → Entrega → Pagamento ──────
