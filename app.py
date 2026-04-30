@@ -3369,77 +3369,111 @@ if "resultado" in st.session_state:
 
         # ── Seção 3: Registrar Ligação com Fornecedor ──────────────────────
         st.markdown("### 📞 Registrar Ligação com Fornecedor")
-        st.caption("Registre uma ligação: uma observação geral que vale para toda a ligação + observações específicas por material (opcional).")
+        st.caption("Selecione o fornecedor para ver todos os pedidos. Registre uma observação geral + observações por item (opcional).")
 
-        with st.form("form_ligacao_fornecedor", clear_on_submit=True):
-            _col_l1, _col_l2 = st.columns(2)
-
-            # Selecionar fornecedor
-            _fornecedores_list = sorted(_ab_ag["fornecedor"].unique().tolist()) if not _ab_ag.empty else []
-            with _col_l1:
-                _sp_forn = st.selectbox("🏭 Fornecedor", _fornecedores_list if _fornecedores_list else ["—"], key="sp_forn")
-
-            with _col_l2:
-                _sp_plan = st.selectbox("👤 Planejador", _planejs if _planejs else ["—"], key="sp_plan_lig")
-
-            # Observação geral (para toda a ligação)
-            _sp_obs_geral = st.text_area(
-                "📌 Observação Geral (vale para toda a ligação com o fornecedor)",
-                height=100,
-                placeholder="Ex: Fornecedor confirmou atraso de 10 dias. Próximo contato em 5 dias para confirmar entrega.",
-                key="sp_obs_geral"
+        # ── Seleção do fornecedor FORA do form (reativo) ────────────────────
+        _fornecedores_list = sorted(
+            [f for f in _ab_ag["fornecedor"].unique() if str(f).strip() not in ("—", "nan", "")]
+        ) if not _ab_ag.empty else []
+        _col_lig1, _col_lig2 = st.columns(2)
+        with _col_lig1:
+            _sp_forn = st.selectbox(
+                "🏭 Fornecedor",
+                ["— Selecione —"] + _fornecedores_list,
+                key="sel_forn_ligacao"
+            )
+        with _col_lig2:
+            _sp_plan = st.selectbox(
+                "👤 Planejador",
+                _planejs if _planejs else ["—"],
+                key="sel_plan_ligacao"
             )
 
-            # Listar pedidos/materiais do fornecedor selecionado para registrar observações individuais
-            if _sp_forn and _sp_forn != "—":
-                _ped_forn = _ab_ag[_ab_ag["fornecedor"] == _sp_forn]
-                if not _ped_forn.empty:
-                    st.markdown("#### Observações por Pedido/Material (opcional):")
-                    _obs_materiais = {}
-                    for idx, (_row_idx, _r_ped) in enumerate(_ped_forn.iterrows()):
-                        _mat = _normalize_material(_r_ped.get("material", ""))
-                        _num_ped = _r_ped.get("numero_pedido", "—")
-                        _desc_m = _desc_map.get(_mat, "—")
-                        _label = f"{_mat} — {_desc_m} (Pedido {_num_ped})"
-                        # Usar índice para garantir key única quando mesmo material em múltiplos pedidos
-                        _unique_key = f"obs_mat_{idx}_{_mat}_{_num_ped}"
-                        _obs_materiais[(idx, _mat, _num_ped)] = st.text_input(
-                            _label,
-                            placeholder="Ex: Aguardando matéria-prima fornecedor X",
-                            key=_unique_key
-                        )
+        # ── Tabela prévia dos pedidos do fornecedor selecionado ─────────────
+        _ped_forn_sel = pd.DataFrame()
+        if _sp_forn and _sp_forn != "— Selecione —":
+            _ped_forn_sel = _ab_ag[_ab_ag["fornecedor"] == _sp_forn].copy()
+
+            if not _ped_forn_sel.empty:
+                # Buscar status atual (última ligação registrada por material/pedido)
+                _hist_forn = _hist_ag[_hist_ag["fornecedor"] == _sp_forn] if not _hist_ag.empty else pd.DataFrame()
+
+                _preview_rows = []
+                for _, _r in _ped_forn_sel.iterrows():
+                    _mat = _normalize_material(_r.get("material", ""))
+                    _num = str(_r.get("numero_pedido", "—"))
+                    _cont = str(_r.get("contrato", "—"))
+                    _desc = _desc_map.get(_mat, "—")
+                    _qtd  = _r.get("quantidade", 0)
+
+                    # Último status registrado para este pedido
+                    if not _hist_forn.empty:
+                        _h = _hist_forn[
+                            (_hist_forn["material"] == _mat) &
+                            (_hist_forn["numero_pedido"] == _num)
+                        ].sort_values("data_ligacao")
+                        _ult_st = _h.iloc[-1]["status"] if not _h.empty else "Sem registro"
+                    else:
+                        _ult_st = "Sem registro"
+
+                    _preview_rows.append({
+                        "Nº Contrato": _cont,
+                        "Nº Pedido": _num,
+                        "Código": _mat,
+                        "Descrição": _desc,
+                        "Qtd Pedido": _qtd,
+                        "Status Atual": _ult_st,
+                    })
+
+                st.dataframe(pd.DataFrame(_preview_rows), use_container_width=True, hide_index=True)
             else:
+                st.info(f"ℹ️ Nenhum pedido aberto para {_sp_forn}.")
+
+        # ── Formulário de observações ────────────────────────────────────────
+        if _sp_forn and _sp_forn != "— Selecione —" and not _ped_forn_sel.empty:
+            with st.form("form_ligacao_fornecedor", clear_on_submit=True):
+
+                _sp_obs_geral = st.text_area(
+                    "📌 Observação Geral (vale para toda a ligação)",
+                    height=90,
+                    placeholder="Ex: Fornecedor confirmou atraso de 10 dias. Próximo contato em 5 dias para confirmar entrega.",
+                    key="sp_obs_geral"
+                )
+
+                st.markdown("#### Observações por Pedido/Material (opcional):")
                 _obs_materiais = {}
+                for _idx, (_, _r_ped) in enumerate(_ped_forn_sel.iterrows()):
+                    _mat = _normalize_material(_r_ped.get("material", ""))
+                    _num_ped = str(_r_ped.get("numero_pedido", "—"))
+                    _desc_m = _desc_map.get(_mat, "—")
+                    _label = f"Pedido {_num_ped} · {_mat} — {_desc_m}"
+                    _obs_materiais[(_idx, _mat, _num_ped)] = st.text_input(
+                        _label,
+                        placeholder="Ex: Aguardando matéria-prima",
+                        key=f"obs_item_{_idx}_{_mat}"
+                    )
 
-            # Status geral (para todos os pedidos do fornecedor)
-            _sp_status_lig = st.selectbox("📊 Status da Ligação", _STATUS_OPCOES, key="sp_status_lig")
+                _sp_status_lig = st.selectbox("📊 Status da Ligação", _STATUS_OPCOES, key="sp_status_lig")
 
-            _sp_submit_lig = st.form_submit_button("💾 Salvar Ligação", use_container_width=True)
-            if _sp_submit_lig:
-                if not _sp_forn or _sp_forn == "—":
-                    st.error("Selecione um fornecedor.")
-                elif not _sp_obs_geral.strip():
-                    st.error("Preencha a observação geral da ligação.")
-                else:
-                    # Preparar lista de pedidos/materiais com suas observações
-                    _ped_info = []
-                    if _sp_forn and _sp_forn != "—":
-                        _ped_forn = _ab_ag[_ab_ag["fornecedor"] == _sp_forn]
-                        for _idx, (_r_idx, _r_ped) in enumerate(_ped_forn.iterrows()):
+                _sp_submit_lig = st.form_submit_button("💾 Salvar Ligação", use_container_width=True)
+                if _sp_submit_lig:
+                    if not _sp_obs_geral.strip():
+                        st.error("Preencha a observação geral da ligação.")
+                    else:
+                        _ped_info = []
+                        for _idx, (_, _r_ped) in enumerate(_ped_forn_sel.iterrows()):
                             _mat = _normalize_material(_r_ped.get("material", ""))
-                            _num_ped = _r_ped.get("numero_pedido", "")
-                            # Buscar observação usando a chave composta
-                            _obs_item = _obs_materiais.get((_idx, _mat, _num_ped), "")
+                            _num_ped = str(_r_ped.get("numero_pedido", ""))
                             _ped_info.append({
                                 "numero_pedido": _num_ped,
                                 "material": _mat,
                                 "status": _sp_status_lig,
-                                "observacao_item": _obs_item,
+                                "observacao_item": _obs_materiais.get((_idx, _mat, _num_ped), ""),
                             })
 
-                    _salvar_ligacao_fornecedor(_sp_forn, _sp_plan, _ped_info, _sp_obs_geral)
-                    st.success(f"✅ Ligação registrada com {_sp_forn} ({len(_ped_info)} itens)")
-                    st.rerun()
+                        _salvar_ligacao_fornecedor(_sp_forn, _sp_plan, _ped_info, _sp_obs_geral)
+                        st.success(f"✅ Ligação registrada com {_sp_forn} ({len(_ped_info)} itens)")
+                        st.rerun()
 
         st.divider()
 
