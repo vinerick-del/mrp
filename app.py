@@ -3194,12 +3194,20 @@ if "resultado" in st.session_state:
             ))
             # Debug: mostrar primeiros 5 materiais e planejadores do mapa
             _sample_map = dict(list(_plan_map.items())[:5])
-            st.caption(f"🔍 Primeiros 5 materials do mapa: {_sample_map}")
+            st.caption(f"✅ Mapa planejador criado com {len(_plan_map)} materiais. Amostra: {_sample_map}")
+        else:
+            st.warning(f"⚠️ Mapa planejador vazio: _mat_ag.empty={_mat_ag.empty if 'empty' in dir(_mat_ag) else '?'}, tem 'planejador'={'planejador' in _mat_ag.columns if not _mat_ag.empty else False}")
 
         # Debug: verificar materiais únicos no MRP
         if not _mrp_ag.empty:
             _mrp_mats = _mrp_ag["material"].astype(str).str.strip().unique()[:5]
             st.caption(f"🔍 Primeiros 5 materiais do MRP: {list(_mrp_mats)}")
+            # Verificar se algum material do MRP está no mapa
+            _mrp_all = _mrp_ag["material"].astype(str).str.strip().unique()
+            _found = sum(1 for m in _mrp_all if m in _plan_map)
+            st.caption(f"📊 {_found}/{len(_mrp_all)} materiais do MRP encontrados no mapa de planejadores")
+        else:
+            st.info("ℹ️ MRP vazio — processe o MRP primeiro")
 
         st.divider()
 
