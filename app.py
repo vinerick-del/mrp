@@ -597,7 +597,7 @@ def _classificar_contratos_mrp(
         def _push(_origem, _qtd, _status, _tipo):
             _r = {**_row.to_dict(),
                   "quantidade"         : _qtd,
-                  "valor_total_pedido" : _qtd * _vu,
+                  "valor_total_pedido" : round(_qtd * _vu, 2),
                   "_origem_mrp"        : _origem,
                   "_status_contrato"   : _status,
                   "_tipo_contrato"     : _tipo}
@@ -1022,7 +1022,7 @@ if _disparar:
                 merged["departamento"]          = merged["departamento"].fillna("NÃO DEFINIDO")
                 merged["programa_orcamentario"] = merged["programa_orcamentario"].fillna("NÃO DEFINIDO")
                 merged["proporcao"]             = merged["proporcao"].fillna(1.0)
-                merged["valor_rateado"]         = merged[col_valor] * merged["proporcao"]
+                merged["valor_rateado"]         = (merged[col_valor] * merged["proporcao"]).round(2)
                 return merged
 
             _df_fin_bruto   = _aplicar_rateio_fin(_df_fin, "valor_pedido")
