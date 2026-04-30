@@ -1867,6 +1867,14 @@ if "resultado" in st.session_state:
                                     .sort_values(["Mês Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
+                                # Adicionar descrição do material
+                                _mat_desc = r.get("materiais_df", pd.DataFrame())
+                                if not _mat_desc.empty and "descricao" in _mat_desc.columns:
+                                    _desc_map = dict(zip(_mat_desc["material"].astype(str), _mat_desc["descricao"]))
+                                    _detail_orc_show.insert(
+                                        1, "Descrição",
+                                        _detail_orc_show["Material"].astype(str).map(_desc_map).fillna("-")
+                                    )
                                 _tot_orc = pd.to_numeric(_detail_orc_show["Valor Rateado"], errors="coerce").fillna(0).sum()
                                 _qtd_orc = int(pd.to_numeric(_detail_orc_show["Qtd"], errors="coerce").fillna(0).sum()) if "Qtd" in _detail_orc_show.columns else 0
                                 # Converter para string BR antes de exibir (garante virgula no CSV exportado)
@@ -2091,6 +2099,12 @@ if "resultado" in st.session_state:
                                     .sort_values(["Data Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
+                                # Adicionar descrição do material
+                                if not _mat_desc.empty and "descricao" in _mat_desc.columns:
+                                    _detail_cx_show.insert(
+                                        1, "Descrição",
+                                        _detail_cx_show["Material"].astype(str).map(_desc_map).fillna("-")
+                                    )
                                 _tot_cx = pd.to_numeric(_detail_cx_show.get("Valor Parcela Rateado", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
                                 _qtd_cx = int(pd.to_numeric(_detail_cx_show.get("Qtd", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
                                 # Converter colunas monetárias para string BR antes de exibir
