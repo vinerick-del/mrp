@@ -16,9 +16,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# Aumentar limite de células do Pandas Styler para tabelas grandes
-pd.set_option("styler.render.max_elements", 1000000)
-
 # ── Importar funções do motor MRP existente ────────────────────────────────────
 from mrp import (
     LEAD_TIME_DIAS,
@@ -2166,13 +2163,8 @@ if "resultado" in st.session_state:
                                 .sort_values(["Mês Pagamento", "Mês Entrega"])
                                 .reset_index(drop=True)
                             )
-                            _fmt_trace = {c: _fmt_brl_contabil for c in [
-                                "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
-                            ] if c in df_trace.columns}
-                            if "Qtd" in df_trace.columns:
-                                _fmt_trace["Qtd"] = "{:,.0f}"
                             st.dataframe(
-                                df_trace.style.format(_fmt_trace, na_rep="-"),
+                                df_trace,
                                 use_container_width=True,
                                 height=400,
                             )
