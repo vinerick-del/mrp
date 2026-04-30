@@ -1874,11 +1874,13 @@ if "resultado" in st.session_state:
                                     f"Total: **{_fmt_brl_contabil(_tot_orc)}**"
                                 )
                                 st.dataframe(
-                                    _detail_orc_show.style.format(
-                                        {"Valor Rateado": _fmt_brl_contabil, "Qtd": "{:,.0f}"}, na_rep="-"
-                                    ),
+                                    _detail_orc_show,
                                     use_container_width=True,
                                     height=380,
+                                    column_config={
+                                        "Valor Rateado": st.column_config.NumberColumn("Valor Rateado", format="R$ %.2f"),
+                                        "Qtd"          : st.column_config.NumberColumn("Qtd", format="%d un."),
+                                    },
                                 )
 
             with subtab_cx:
@@ -2088,11 +2090,6 @@ if "resultado" in st.session_state:
                                     .sort_values(["Data Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
-                                _fmt_cx = {c: _fmt_brl_contabil for c in [
-                                    "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
-                                ] if c in _detail_cx_show.columns}
-                                if "Qtd" in _detail_cx_show.columns:
-                                    _fmt_cx["Qtd"] = "{:,.0f}"
                                 _tot_cx = _detail_cx_show["Valor Parcela Rateado"].sum() if "Valor Parcela Rateado" in _detail_cx_show.columns else 0.0
                                 _qtd_cx = int(_detail_cx_show["Qtd"].sum()) if "Qtd" in _detail_cx_show.columns else 0
                                 st.caption(
@@ -2101,9 +2098,15 @@ if "resultado" in st.session_state:
                                     f"Total rateado: **{_fmt_brl_contabil(_tot_cx)}**"
                                 )
                                 st.dataframe(
-                                    _detail_cx_show.style.format(_fmt_cx, na_rep="-"),
+                                    _detail_cx_show,
                                     use_container_width=True,
                                     height=380,
+                                    column_config={
+                                        "Valor Total Pedido"    : st.column_config.NumberColumn("Valor Total Pedido", format="R$ %.2f"),
+                                        "Valor da Parcela"      : st.column_config.NumberColumn("Valor da Parcela", format="R$ %.2f"),
+                                        "Valor Parcela Rateado" : st.column_config.NumberColumn("Valor Parcela Rateado", format="R$ %.2f"),
+                                        "Qtd"                   : st.column_config.NumberColumn("Qtd", format="%d un."),
+                                    },
                                 )
 
                     # ── Rastreio completo: Emissão → Entrega → Pagamento ──────
@@ -2167,6 +2170,12 @@ if "resultado" in st.session_state:
                                 df_trace,
                                 use_container_width=True,
                                 height=400,
+                                column_config={
+                                    "Valor Total Pedido"  : st.column_config.NumberColumn("Valor Total Pedido", format="R$ %.2f"),
+                                    "Valor da Parcela"    : st.column_config.NumberColumn("Valor da Parcela", format="R$ %.2f"),
+                                    "Valor Parcela Rateado": st.column_config.NumberColumn("Valor Parcela Rateado", format="R$ %.2f"),
+                                    "Qtd"                 : st.column_config.NumberColumn("Qtd", format="%d un."),
+                                },
                             )
 
                             # ── Download Excel — relatório completo (sem filtros) ──────
