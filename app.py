@@ -3160,19 +3160,38 @@ if "resultado" in st.session_state:
         _mrp_ag  = r.get("mrp",          pd.DataFrame())
         _hist_ag = _carregar_status_pedidos()
 
+        # Debug: mostrar colunas disponíveis
+        if _mat_ag.empty:
+            st.warning("⚠️ Nenhum dado de MRP processado ainda. Processe o MRP primeiro.")
+        else:
+            st.caption(f"🔍 Colunas materiais: {list(_mat_ag.columns)}")
+
         # ── Filtro por planejador ───────────────────────────────────────────
         _planejs = sorted(_mat_ag["planejador"].dropna().unique().tolist()) \
             if not _mat_ag.empty and "planejador" in _mat_ag.columns else []
+        if not _planejs:
+            st.warning("⚠️ Nenhum planejador encontrado na coluna 'PLANEJADOR' do arquivo. Verifique se a coluna existe e tem dados.")
         _plan_sel = st.selectbox(
             "Planejador",
             ["Todos"] + _planejs,
             key="agenda_planner",
         )
 
-        # mapa material → planejador
+        # mapa material → planejador (normalizar ambos para string)
         _plan_map: dict = {}
         if not _mat_ag.empty and "planejador" in _mat_ag.columns:
-            _plan_map = dict(zip(_mat_ag["material"].astype(str), _mat_ag["planejador"]))
+            _plan_map = dict(zip(
+                _mat_ag["material"].astype(str).str.strip(),
+                _mat_ag["planejador"].astype(str).str.strip()
+            ))
+            # Debug: mostrar primeiros 5 materiais e planejadores do mapa
+            _sample_map = dict(list(_plan_map.items())[:5])
+            st.caption(f"🔍 Primeiros 5 materials do mapa: {_sample_map}")
+
+        # Debug: verificar materiais únicos no MRP
+        if not _mrp_ag.empty:
+            _mrp_mats = _mrp_ag["material"].astype(str).str.strip().unique()[:5]
+            st.caption(f"🔍 Primeiros 5 materiais do MRP: {list(_mrp_mats)}")
 
         st.divider()
 
@@ -3186,7 +3205,8 @@ if "resultado" in st.session_state:
         _urgentes = []
         if not _mrp_ag.empty and "necessidade" in _mrp_ag.columns:
             for _mat_u, _grp_u in _mrp_ag.groupby("material"):
-                _plan_u = _plan_map.get(str(_mat_u), "—")
+                _mat_u_str = str(_mat_u).strip()
+                _plan_u = _plan_map.get(_mat_u_str, "—")
                 if _plan_sel != "Todos" and _plan_u != _plan_sel:
                     continue
                 # primeiro mês com necessidade > 0
@@ -3194,9 +3214,9 @@ if "resultado" in st.session_state:
                 if _nec.empty:
                     continue
                 _mes_nec = _nec["mes"].min()
-                _lt = int(_mat_ag.loc[_mat_ag["material"].astype(str) == str(_mat_u), "lead_time_dias"].values[0]) \
+                _lt = int(_mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str, "lead_time_dias"].values[0]) \
                     if not _mat_ag.empty and "lead_time_dias" in _mat_ag.columns \
-                    and not _mat_ag[_mat_ag["material"].astype(str) == str(_mat_u)].empty else 60
+                    and len(_mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str]) > 0 else 60
                 try:
                     _data_nec = pd.Period(_mes_nec, "M").to_timestamp()
                     _dias_ate_nec = (_data_nec - pd.Timestamp.today()).days
@@ -3204,11 +3224,11 @@ if "resultado" in st.session_state:
                 except Exception:
                     _urgente = False
                 if _urgente:
-                    _desc_u = _mat_ag.loc[_mat_ag["material"].astype(str) == str(_mat_u), "descricao"].values[0] \
+                    _desc_u = _mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str, "descricao"].values[0] \
                         if not _mat_ag.empty and "descricao" in _mat_ag.columns \
-                        and not _mat_ag[_mat_ag["material"].astype(str) == str(_mat_u)].empty else "-"
+                        and len(_mat_ag.loc[_mat_ag["material"].astype(str).str.strip() == _mat_u_str]) > 0 else "-"
                     _urgentes.append({
-                        "Material"   : str(_mat_u),
+                        "Material"   : _mat_u_str,
                         "Descrição"  : _desc_u,
                         "Planejador" : _plan_u,
                         "1º Mês c/ Nec.": _mes_nec,
@@ -3221,7 +3241,7 @@ if "resultado" in st.session_state:
             _df_urg = pd.DataFrame(_urgentes).sort_values("Folga (dias)")
             st.dataframe(_df_urg, use_container_width=True, height=300)
         else:
-            st.success("Nenhum material com pedido urgente no momento.")
+            st.success("✅ Nenhum material com pedido urgente no momento.")
 
         st.divider()
 
@@ -3232,7 +3252,7 @@ if "resultado" in st.session_state:
         _fup_rows = []
         if not _ab_ag.empty:
             for _, _r_ab in _ab_ag.iterrows():
-                _mat_f = str(_r_ab.get("material", ""))
+                _mat_f = str(_r_ab.get("material", "")).strip()
                 _plan_f = _plan_map.get(_mat_f, "—")
                 if _plan_sel != "Todos" and _plan_f != _plan_sel:
                     continue
@@ -3254,7 +3274,7 @@ if "resultado" in st.session_state:
             _df_fup = pd.DataFrame(_fup_rows).sort_values(["Planejador", "Mês Entrega"])
             st.dataframe(_df_fup, use_container_width=True, height=320)
         else:
-            st.info("Nenhum pedido SAP aberto encontrado.")
+            st.info("ℹ️ Nenhum pedido SAP aberto encontrado.")
 
         st.divider()
 
@@ -3276,7 +3296,7 @@ if "resultado" in st.session_state:
                     st.error("Informe o Nº do Pedido e o Código do Material.")
                 else:
                     _salvar_status_pedido(_sp_num, _sp_mat, _sp_plan, _sp_status, _sp_obs)
-                    st.success(f"Registro salvo: {_sp_mat} → {_sp_status}")
+                    st.success(f"✅ Registro salvo: {_sp_mat} → {_sp_status}")
                     st.rerun()
 
         st.divider()
@@ -3303,7 +3323,8 @@ if "resultado" in st.session_state:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             else:
-                st.info("Nenhum registro ainda.")
+                st.info("ℹ️ Nenhum registro ainda.")
+
 
 else:
     # Estado inicial — instrução ao usuário
