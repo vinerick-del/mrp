@@ -268,7 +268,50 @@ def _cached_passos_6_11(
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS DE RATEIO MANUAL
 # ─────────────────────────────────────────────────────────────────────────────
-_RATEIO_MANUAL_PATH = os.path.join(DIR_DADOS, "rateio_manual.csv")
+_RATEIO_MANUAL_PATH   = os.path.join(DIR_DADOS, "rateio_manual.csv")
+_STATUS_PEDIDOS_PATH  = os.path.join(DIR_DADOS, "status_pedidos.csv")
+
+_STATUS_OPCOES = [
+    "Emitido",
+    "Cotação",
+    "Fabricando",
+    "Embarque",
+    "Em Trânsito",
+    "Alfândega",
+    "Entregue",
+    "Cancelado",
+]
+_STATUS_ABERTOS = {"Emitido", "Cotação", "Fabricando", "Embarque", "Em Trânsito", "Alfândega"}
+
+
+def _carregar_status_pedidos() -> pd.DataFrame:
+    """Retorna histórico completo de status de pedidos."""
+    if not os.path.exists(_STATUS_PEDIDOS_PATH):
+        return pd.DataFrame(columns=[
+            "id", "numero_pedido", "material", "planejador",
+            "status", "data_atualizacao", "observacao",
+        ])
+    df = pd.read_csv(_STATUS_PEDIDOS_PATH, sep=";", dtype={"material": str, "id": str})
+    return df.fillna("")
+
+
+def _salvar_status_pedido(numero_pedido: str, material: str, planejador: str,
+                           status: str, observacao: str) -> None:
+    """Acrescenta uma linha de status ao histórico."""
+    df = _carregar_status_pedidos()
+    novo_id = str(int(df["id"].replace("", "0").astype(float).max() + 1)) if not df.empty else "1"
+    nova = pd.DataFrame([{
+        "id"               : novo_id,
+        "numero_pedido"    : str(numero_pedido).strip(),
+        "material"         : str(material).strip(),
+        "planejador"       : str(planejador).strip(),
+        "status"           : status,
+        "data_atualizacao" : datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "observacao"       : observacao.strip(),
+    }])
+    df = pd.concat([df, nova], ignore_index=True)
+    os.makedirs(DIR_DADOS, exist_ok=True)
+    df.to_csv(_STATUS_PEDIDOS_PATH, sep=";", index=False)
 
 
 def _carregar_rateio_manual() -> pd.DataFrame:
@@ -1126,7 +1169,7 @@ if "resultado" in st.session_state:
     st.divider()
 
     # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend, tab_dfp = st.tabs([
+    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend, tab_dfp, tab_agenda = st.tabs([
         "📊 MRP Projetado",
         "📅 Projeção de Estoque",
         "🛒 Pedidos a Gerar",
@@ -1136,6 +1179,7 @@ if "resultado" in st.session_state:
         "📂 Rateio",
         "⚠️ Rateio Pendente",
         "🏦 Rateio DFP",
+        "📋 Agenda do Comprador",
     ])
 
     with tab_mrp:
@@ -3106,6 +3150,160 @@ if "resultado" in st.session_state:
         st.warning("openpyxl não instalado — execute: pip install openpyxl")
     except Exception as exc:
         st.error(f"Erro ao gerar Excel: {exc}")
+
+    with tab_agenda:
+        st.subheader("Agenda do Comprador")
+
+        _mat_ag  = r.get("materiais_df", pd.DataFrame())
+        _ped_ag  = r.get("pedidos",      pd.DataFrame())   # novos MRP
+        _ab_ag   = r.get("abertos_fut",  pd.DataFrame())   # pedidos SAP abertos
+        _mrp_ag  = r.get("mrp",          pd.DataFrame())
+        _hist_ag = _carregar_status_pedidos()
+
+        # ── Filtro por planejador ───────────────────────────────────────────
+        _planejs = sorted(_mat_ag["planejador"].dropna().unique().tolist()) \
+            if not _mat_ag.empty and "planejador" in _mat_ag.columns else []
+        _plan_sel = st.selectbox(
+            "Planejador",
+            ["Todos"] + _planejs,
+            key="agenda_planner",
+        )
+
+        # mapa material → planejador
+        _plan_map: dict = {}
+        if not _mat_ag.empty and "planejador" in _mat_ag.columns:
+            _plan_map = dict(zip(_mat_ag["material"].astype(str), _mat_ag["planejador"]))
+
+        st.divider()
+
+        # ── Seção 1: Agir Hoje / Urgente ───────────────────────────────────
+        st.markdown("### 🔴 Agir Hoje — Emitir Pedido")
+        st.caption(
+            "Materiais onde a janela para emitir o pedido está vencida ou vencendo: "
+            "projeção de ruptura ≤ lead time."
+        )
+
+        _urgentes = []
+        if not _mrp_ag.empty and "necessidade" in _mrp_ag.columns:
+            for _mat_u, _grp_u in _mrp_ag.groupby("material"):
+                _plan_u = _plan_map.get(str(_mat_u), "—")
+                if _plan_sel != "Todos" and _plan_u != _plan_sel:
+                    continue
+                # primeiro mês com necessidade > 0
+                _nec = _grp_u[_grp_u["necessidade"] > 0]
+                if _nec.empty:
+                    continue
+                _mes_nec = _nec["mes"].min()
+                _lt = int(_mat_ag.loc[_mat_ag["material"].astype(str) == str(_mat_u), "lead_time_dias"].values[0]) \
+                    if not _mat_ag.empty and "lead_time_dias" in _mat_ag.columns \
+                    and not _mat_ag[_mat_ag["material"].astype(str) == str(_mat_u)].empty else 60
+                try:
+                    _data_nec = pd.Period(_mes_nec, "M").to_timestamp()
+                    _dias_ate_nec = (_data_nec - pd.Timestamp.today()).days
+                    _urgente = _dias_ate_nec <= _lt
+                except Exception:
+                    _urgente = False
+                if _urgente:
+                    _desc_u = _mat_ag.loc[_mat_ag["material"].astype(str) == str(_mat_u), "descricao"].values[0] \
+                        if not _mat_ag.empty and "descricao" in _mat_ag.columns \
+                        and not _mat_ag[_mat_ag["material"].astype(str) == str(_mat_u)].empty else "-"
+                    _urgentes.append({
+                        "Material"   : str(_mat_u),
+                        "Descrição"  : _desc_u,
+                        "Planejador" : _plan_u,
+                        "1º Mês c/ Nec.": _mes_nec,
+                        "Dias p/ Ruptura": _dias_ate_nec,
+                        "Lead Time (dias)": _lt,
+                        "Folga (dias)": _dias_ate_nec - _lt,
+                    })
+
+        if _urgentes:
+            _df_urg = pd.DataFrame(_urgentes).sort_values("Folga (dias)")
+            st.dataframe(_df_urg, use_container_width=True, height=300)
+        else:
+            st.success("Nenhum material com pedido urgente no momento.")
+
+        st.divider()
+
+        # ── Seção 2: Follow-up de Pedidos Abertos ──────────────────────────
+        st.markdown("### 🟡 Follow-up — Pedidos em Andamento")
+
+        # Montar lista de pedidos abertos (SAP + MRP gerados ainda não entregues)
+        _fup_rows = []
+        if not _ab_ag.empty:
+            for _, _r_ab in _ab_ag.iterrows():
+                _mat_f = str(_r_ab.get("material", ""))
+                _plan_f = _plan_map.get(_mat_f, "—")
+                if _plan_sel != "Todos" and _plan_f != _plan_sel:
+                    continue
+                # Último status registrado
+                _hist_mat = _hist_ag[_hist_ag["material"] == _mat_f] if not _hist_ag.empty else pd.DataFrame()
+                _ult_status = _hist_mat.sort_values("data_atualizacao").iloc[-1] if not _hist_mat.empty else None
+                _mes_rem = str(_r_ab.get("mes_remessa") or _r_ab.get("mes_entrega", "-"))
+                _fup_rows.append({
+                    "Material"      : _mat_f,
+                    "Planejador"    : _plan_f,
+                    "Qtd Pendente"  : _r_ab.get("quantidade", 0),
+                    "Mês Entrega"   : _mes_rem,
+                    "Último Status" : _ult_status["status"] if _ult_status is not None else "Sem registro",
+                    "Última Obs."   : _ult_status["observacao"] if _ult_status is not None else "-",
+                    "Última Atualiz.": _ult_status["data_atualizacao"] if _ult_status is not None else "-",
+                })
+
+        if _fup_rows:
+            _df_fup = pd.DataFrame(_fup_rows).sort_values(["Planejador", "Mês Entrega"])
+            st.dataframe(_df_fup, use_container_width=True, height=320)
+        else:
+            st.info("Nenhum pedido SAP aberto encontrado.")
+
+        st.divider()
+
+        # ── Seção 3: Registrar Status / Observação ─────────────────────────
+        st.markdown("### 📝 Registrar Contato com Fornecedor")
+        with st.form("form_status_pedido", clear_on_submit=True):
+            _col_s1, _col_s2 = st.columns(2)
+            with _col_s1:
+                _sp_num  = st.text_input("Nº do Pedido / Contrato", placeholder="ex: 4500012345")
+                _sp_mat  = st.text_input("Código do Material",       placeholder="ex: 402161")
+                _sp_plan = st.selectbox("Planejador", _planejs if _planejs else ["—"], key="sp_plan")
+            with _col_s2:
+                _sp_status = st.selectbox("Status", _STATUS_OPCOES,  key="sp_status")
+                _sp_obs    = st.text_area("Observações da ligação",   height=120,
+                                          placeholder="Fornecedor confirmou fabricação para 20/05. Próximo contato em 10 dias.")
+            _sp_submit = st.form_submit_button("💾 Salvar Registro", use_container_width=True)
+            if _sp_submit:
+                if not _sp_num.strip() or not _sp_mat.strip():
+                    st.error("Informe o Nº do Pedido e o Código do Material.")
+                else:
+                    _salvar_status_pedido(_sp_num, _sp_mat, _sp_plan, _sp_status, _sp_obs)
+                    st.success(f"Registro salvo: {_sp_mat} → {_sp_status}")
+                    st.rerun()
+
+        st.divider()
+
+        # ── Seção 4: Histórico de Registros ────────────────────────────────
+        with st.expander("📜 Histórico Completo de Registros"):
+            _hist_view = _carregar_status_pedidos()
+            if _plan_sel != "Todos" and not _hist_view.empty:
+                _hist_view = _hist_view[_hist_view["planejador"] == _plan_sel]
+            if not _hist_view.empty:
+                st.dataframe(
+                    _hist_view.sort_values("data_atualizacao", ascending=False)
+                    .reset_index(drop=True),
+                    use_container_width=True,
+                    height=350,
+                )
+                _buf_hist = io.BytesIO()
+                with pd.ExcelWriter(_buf_hist, engine="openpyxl") as _wr_hist:
+                    _hist_view.to_excel(_wr_hist, index=False, sheet_name="Histórico")
+                st.download_button(
+                    "⬇ Exportar Histórico (Excel)",
+                    data=_buf_hist.getvalue(),
+                    file_name="historico_pedidos.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            else:
+                st.info("Nenhum registro ainda.")
 
 else:
     # Estado inicial — instrução ao usuário

@@ -678,6 +678,13 @@ def ler_materiais(source) -> pd.DataFrame:
         "LT DIAS"                 : "lead_time_dias",
         "LT"                      : "lead_time_dias",
         "DIAS"                    : "lead_time_dias",
+        # responsável / planejador
+        "PLANEJADOR"    : "planejador",
+        "PLANNER"       : "planejador",
+        "RESPONSAVEL"   : "planejador",
+        "RESPONSÁVEL"   : "planejador",
+        "COMPRADOR"     : "planejador",
+        "BUYER"         : "planejador",
     }
     rename = {c: col_aliases[c.upper().strip()]
               for c in df.columns if c.upper().strip() in col_aliases}
@@ -702,6 +709,9 @@ def ler_materiais(source) -> pd.DataFrame:
     if "lead_time_dias" in df.columns:
         df["lead_time_dias"] = pd.to_numeric(df["lead_time_dias"], errors="coerce")
         cols.append("lead_time_dias")
+    if "planejador" in df.columns:
+        df["planejador"] = df["planejador"].astype(str).str.strip()
+        cols.append("planejador")
 
     return df[cols].drop_duplicates(subset="material")
 
