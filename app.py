@@ -1867,18 +1867,19 @@ if "resultado" in st.session_state:
                                     .sort_values(["Mês Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
-                                _tot_orc = _detail_orc_show["Valor Rateado"].sum()
-                                _qtd_orc = int(_detail_orc_show["Qtd"].sum()) if "Qtd" in _detail_orc_show.columns else 0
+                                _tot_orc = pd.to_numeric(_detail_orc_show["Valor Rateado"], errors="coerce").fillna(0).sum()
+                                _qtd_orc = int(pd.to_numeric(_detail_orc_show["Qtd"], errors="coerce").fillna(0).sum()) if "Qtd" in _detail_orc_show.columns else 0
+                                # Converter para string BR antes de exibir (garante virgula no CSV exportado)
+                                _detail_orc_show["Valor Rateado"] = pd.to_numeric(_detail_orc_show["Valor Rateado"], errors="coerce").fillna(0).apply(
+                                    lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if v != 0 else "-"
+                                )
                                 st.caption(
                                     f"{len(_detail_orc_show)} linha(s) · "
                                     f"Qtd total: **{_qtd_orc:,} un.** · "
                                     f"Total: **{_fmt_brl_contabil(_tot_orc)}**"
                                 )
                                 st.dataframe(
-                                    _detail_orc_show.style.format(
-                                        {"Valor Rateado": _fmt_brl_contabil, "Qtd": "{:,.0f}"},
-                                        na_rep="-",
-                                    ),
+                                    _detail_orc_show,
                                     use_container_width=True,
                                     height=380,
                                 )
@@ -2090,20 +2091,23 @@ if "resultado" in st.session_state:
                                     .sort_values(["Data Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
-                                _tot_cx = _detail_cx_show["Valor Parcela Rateado"].sum() if "Valor Parcela Rateado" in _detail_cx_show.columns else 0.0
-                                _qtd_cx = int(_detail_cx_show["Qtd"].sum()) if "Qtd" in _detail_cx_show.columns else 0
+                                _tot_cx = pd.to_numeric(_detail_cx_show.get("Valor Parcela Rateado", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+                                _qtd_cx = int(pd.to_numeric(_detail_cx_show.get("Qtd", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+                                # Converter colunas monetárias para string BR antes de exibir
+                                def _to_br_str(series):
+                                    return pd.to_numeric(series, errors="coerce").fillna(0).apply(
+                                        lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if v != 0 else "-"
+                                    )
+                                for _mc in ["Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"]:
+                                    if _mc in _detail_cx_show.columns:
+                                        _detail_cx_show[_mc] = _to_br_str(_detail_cx_show[_mc])
                                 st.caption(
                                     f"{len(_detail_cx_show)} parcela(s) · "
                                     f"Qtd total: **{_qtd_cx:,} un.** · "
                                     f"Total rateado: **{_fmt_brl_contabil(_tot_cx)}**"
                                 )
-                                _fmt_cx = {c: _fmt_brl_contabil for c in [
-                                    "Valor Total Pedido", "Valor da Parcela", "Valor Parcela Rateado"
-                                ] if c in _detail_cx_show.columns}
-                                if "Qtd" in _detail_cx_show.columns:
-                                    _fmt_cx["Qtd"] = "{:,.0f}"
                                 st.dataframe(
-                                    _detail_cx_show.style.format(_fmt_cx, na_rep="-"),
+                                    _detail_cx_show,
                                     use_container_width=True,
                                     height=380,
                                 )
