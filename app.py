@@ -1867,13 +1867,22 @@ if "resultado" in st.session_state:
                                     .sort_values(["Mês Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
-                                # Adicionar descrição do material
+                                # Adicionar descrição e classificação ABC do material
                                 _mat_desc = r.get("materiais_df", pd.DataFrame())
+                                _abc_map = {}
                                 if not _mat_desc.empty and "descricao" in _mat_desc.columns:
                                     _desc_map = dict(zip(_mat_desc["material"].astype(str), _mat_desc["descricao"]))
                                     _detail_orc_show.insert(
                                         1, "Descrição",
                                         _detail_orc_show["Material"].astype(str).map(_desc_map).fillna("-")
+                                    )
+                                # Classificação ABC
+                                _abc_df = r.get("abc", pd.DataFrame())
+                                if not _abc_df.empty and "classe" in _abc_df.columns:
+                                    _abc_map = dict(zip(_abc_df["material"].astype(str), _abc_df["classe"]))
+                                    _detail_orc_show.insert(
+                                        2, "Classe ABC",
+                                        _detail_orc_show["Material"].astype(str).map(_abc_map).fillna("-")
                                     )
                                 _tot_orc = pd.to_numeric(_detail_orc_show["Valor Rateado"], errors="coerce").fillna(0).sum()
                                 _qtd_orc = int(pd.to_numeric(_detail_orc_show["Qtd"], errors="coerce").fillna(0).sum()) if "Qtd" in _detail_orc_show.columns else 0
@@ -2099,11 +2108,16 @@ if "resultado" in st.session_state:
                                     .sort_values(["Data Chegada", "Material"])
                                     .reset_index(drop=True)
                                 )
-                                # Adicionar descrição do material
+                                # Adicionar descrição e classificação ABC do material
                                 if not _mat_desc.empty and "descricao" in _mat_desc.columns:
                                     _detail_cx_show.insert(
                                         1, "Descrição",
                                         _detail_cx_show["Material"].astype(str).map(_desc_map).fillna("-")
+                                    )
+                                if not _abc_df.empty and "classe" in _abc_df.columns:
+                                    _detail_cx_show.insert(
+                                        2, "Classe ABC",
+                                        _detail_cx_show["Material"].astype(str).map(_abc_map).fillna("-")
                                     )
                                 _tot_cx = pd.to_numeric(_detail_cx_show.get("Valor Parcela Rateado", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
                                 _qtd_cx = int(pd.to_numeric(_detail_cx_show.get("Qtd", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
