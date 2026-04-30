@@ -206,6 +206,7 @@ def _mtime(path: str) -> float:
 
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def _cached_ler_materiais(path: str, _mtime: float) -> pd.DataFrame:
     return ler_materiais(path)
 
@@ -810,6 +811,13 @@ if _disparar:
                 if os.path.exists(mat_path)
                 else pd.DataFrame(columns=["material", "descricao", "valor_unitario"])
             )
+            print(f"  [MATERIAIS] Colunas carregadas: {list(materiais.columns)}")
+            if "planejador" in materiais.columns:
+                _planej_count = materiais["planejador"].nunique()
+                print(f"  [MATERIAIS] Planejadores encontrados: {_planej_count}")
+                print(f"  [MATERIAIS] Valores únicos: {sorted(materiais['planejador'].dropna().unique().tolist())}")
+            else:
+                print(f"  [MATERIAIS] ⚠ Coluna 'planejador' NÃO encontrada em materiais.csv")
 
             # ── Contratos SAP (cacheado por mtime) ───────────────────────────
             cont_path = achar_arquivo("Contratos_SAP") or achar_arquivo("contratos_sap.csv")
