@@ -16,6 +16,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+# Aumentar limite de células do Pandas Styler para tabelas grandes
+pd.set_option("styler.render.max_elements", 1000000)
+
 # ── Importar funções do motor MRP existente ────────────────────────────────────
 from mrp import (
     LEAD_TIME_DIAS,
@@ -925,8 +928,6 @@ if _disparar:
                                           "documento_referencia","numero_pedido"]])
 
             _df_fin = pd.concat(_linhas_fin, ignore_index=True) if _linhas_fin else pd.DataFrame()
-            print(f"[DEBUG] _df_fin.columns = {list(_df_fin.columns)}")
-            print(f"[DEBUG] _df_fin tem 'quantidade'? {'quantidade' in _df_fin.columns}")
 
             # Visão Orçamentária
             _vis_orc = pd.DataFrame()
@@ -1846,7 +1847,6 @@ if "resultado" in st.session_state:
                             if _detail_orc.empty:
                                 st.info("Nenhum registro para este mês/origem.")
                             else:
-                                st.caption(f"🔍 DEBUG colunas: {list(_detail_orc.columns)}")
                                 _orc_dcols = [c for c in [
                                     "material", "origem",
                                     "mes_pedido", "mes_entrega",
