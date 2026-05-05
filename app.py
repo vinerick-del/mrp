@@ -2736,11 +2736,12 @@ if "resultado" in st.session_state:
                 _n_total_sem_rateio = len(_df_nao_def["material"].unique())
                 _n_vencidos = _n_total_sem_rateio - _n_com_data_futura
 
-                if _n_vencidos > 0:
-                    st.info(f"📅 Filtrando por período de entrega: **{_mes_atual}** em diante  \n"
-                           f"({_n_com_data_futura} de {_n_total_sem_rateio} materiais ainda pendentes de atribuição)")
+                st.info(f"📅 Filtrando por período de entrega: **{_mes_atual}** em diante  \n"
+                       f"({_n_com_data_futura} de {_n_total_sem_rateio} materiais ainda pendentes de atribuição)")
 
                 _df_nao_def = _df_nao_def_futuro
+            else:
+                st.warning("⚠️ Coluna 'periodo_entrega' não encontrada. Reprocesse o MRP para ativar o filtro por período.")
 
             _mats_nao_def = sorted(_df_nao_def["material"].astype(str).unique().tolist()) \
                 if not _df_nao_def.empty else []
