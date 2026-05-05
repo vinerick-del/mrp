@@ -1506,20 +1506,30 @@ def passo_4_pedidos_abertos() -> tuple[pd.DataFrame, pd.DataFrame]:
         df["mes_pedido"] = None
 
     # ── Nº pedido e contrato ──────────────────────────────────────────────────
-    col_num_ped = next(
-        (c for c in df.columns if c.lower() in (
-            "documento de compras", "nº doc. compras", "purchase order",
-            "doc. de compras", "pedido de compra",
-        )), None
-    )
-    col_cont = next(
-        (c for c in df.columns if c.lower() in (
-            "contrato básico", "contrato basico", "contract", "contrato",
-        )), None
-    )
+    _ped_aliases = {
+        "documento de compras", "nº doc. compras", "nº do doc. de compras",
+        "purchase order", "doc. de compras", "pedido de compra",
+        "doc.compras", "doc. compras", "pedido", "nº pedido",
+        "numero pedido", "número pedido", "num. pedido",
+        "ordem de compra", "purchase doc.", "purch. doc.",
+    }
+    _cont_aliases = {
+        "contrato básico", "contrato basico", "contract", "contrato",
+        "contrato de fornecimento", "acordo", "scheduling agreement",
+    }
+    col_num_ped = next((c for c in df.columns if c.lower().strip() in _ped_aliases), None)
+    col_cont    = next((c for c in df.columns if c.lower().strip() in _cont_aliases), None)
+
+    # Fallback: se ainda não detectou, tenta coluna que contenha "compra" no nome
+    if col_num_ped is None:
+        col_num_ped = next((c for c in df.columns
+                            if "compra" in c.lower() and "contrato" not in c.lower()), None)
 
     df["numero_pedido"] = df[col_num_ped].astype(str).str.strip() if col_num_ped else None
     df["contrato"]      = df[col_cont].astype(str).str.strip()    if col_cont  else None
+
+    print(f"  Coluna Nº Pedido     : {col_num_ped!r:30s} → amostra: {df['numero_pedido'].dropna().head(3).tolist() if col_num_ped else 'NÃO DETECTADA'}")
+    print(f"  Coluna Contrato      : {col_cont!r:30s} → amostra: {df['contrato'].dropna().head(3).tolist() if col_cont else 'NÃO DETECTADA'}")
 
     # Fornecedor (opcional — nem todo export ME2M inclui)
     col_forn = next((c for c in df.columns if c.lower() in (
