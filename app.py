@@ -2189,15 +2189,19 @@ if "resultado" in st.session_state:
                                     .reset_index(drop=True)
                                 )
                                 # Adicionar descrição e classificação ABC do material
-                                if not _mat_desc.empty and "descricao" in _mat_desc.columns:
+                                _mat_desc_cx = r.get("materiais_df", pd.DataFrame())
+                                if not _mat_desc_cx.empty and "descricao" in _mat_desc_cx.columns:
+                                    _desc_map_cx = dict(zip(_mat_desc_cx["material"].astype(str), _mat_desc_cx["descricao"]))
                                     _detail_cx_show.insert(
                                         1, "Descrição",
-                                        _detail_cx_show["Material"].astype(str).map(_desc_map).fillna("-")
+                                        _detail_cx_show["Material"].astype(str).map(_desc_map_cx).fillna("-")
                                     )
-                                if not _abc_df.empty and "classe" in _abc_df.columns:
+                                _abc_df_cx = r.get("abc", pd.DataFrame())
+                                if not _abc_df_cx.empty and "classe" in _abc_df_cx.columns:
+                                    _abc_map_cx = dict(zip(_abc_df_cx["material"].astype(str), _abc_df_cx["classe"]))
                                     _detail_cx_show.insert(
                                         2, "Classe ABC",
-                                        _detail_cx_show["Material"].astype(str).map(_abc_map).fillna("-")
+                                        _detail_cx_show["Material"].astype(str).map(_abc_map_cx).fillna("-")
                                     )
                                 _tot_cx = pd.to_numeric(_detail_cx_show.get("Valor Parcela Rateado", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
                                 _qtd_cx = int(pd.to_numeric(_detail_cx_show.get("Qtd", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
