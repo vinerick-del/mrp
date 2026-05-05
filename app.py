@@ -2885,43 +2885,169 @@ if "resultado" in st.session_state:
                     hide_index=True,
                 )
 
-        # ── Seção 1.5: Sugestões de rateio histórico ──────────────────────────
-        st.markdown("#### 💡 Sugestões de Rateio Histórico")
+        # ── Seção 1.5: Sugestões de rateio ───────────────────────────────────
+        st.markdown("#### 💡 Sugestões de Rateio")
 
-        _df_nao_def_para_sugestoes = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy() if not df_rateio.empty else pd.DataFrame()
-        _sugestoes = _sugestoes_rateio_historico(_df_nao_def_para_sugestoes)
+        _df_nao_def_para_sug = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy() if not df_rateio.empty else pd.DataFrame()
+        _mats_sem_rateio = set(_df_nao_def_para_sug["material"].astype(str).unique()) if not _df_nao_def_para_sug.empty else set()
 
-        if _sugestoes:
-            st.info(f"✨ Encontradas **{len(_sugestoes)} sugestão(ões)** de rateio histórico")
+        # ── Fonte 1: demanda atual carregada (DEP. + AÇÃO/PROJETO) ────────────
+        _sugestoes_demanda: dict[str, list[dict]] = {}
+        if _mats_sem_rateio and not _dd_df.empty and "departamento" in _dd_df.columns:
+            _dd_filtrado = _dd_df[
+                _dd_df["material"].astype(str).str.strip().isin(_mats_sem_rateio) &
+                _dd_df["departamento"].fillna("").str.strip().ne("") &
+                _dd_df["departamento"].fillna("").str.strip().ne("NAO_DEFINIDO")
+            ]
+            if not _dd_filtrado.empty:
+                _rateio_dem = derivar_rateio_da_demanda(_dd_filtrado)
+                for _, rrow in _rateio_dem.iterrows():
+                    mat = str(rrow["material"]).strip()
+                    if mat not in _sugestoes_demanda:
+                        _sugestoes_demanda[mat] = []
+                    _sugestoes_demanda[mat].append({
+                        "departamento"        : rrow["departamento"],
+                        "programa_orcamentario": rrow.get("programa_orcamentario"),
+                        "proporcao"           : float(rrow["proporcao"]),
+                    })
 
-            for i, sug in enumerate(_sugestoes):
-                with st.expander(f"Material {sug['material']} → {sug['departamento']} (revisão: {sug['revisao']})"):
-                    col1, col2, col3 = st.columns([2, 2, 1])
-                    with col1:
-                        st.write(f"**Departamento:** {sug['departamento']}")
-                    with col2:
-                        st.write(f"**Programa:** {sug['programa_orcamentario'] or '(não definido)'}")
-                    with col3:
-                        st.write(f"**Proporção:** {(sug['proporcao']*100):.1f}%" if sug['proporcao'] else "100%")
+        # ── Fonte 2: upload de arquivo de demanda externo ─────────────────────
+        with st.expander("📂 Importar arquivo de demanda para sugestões de rateio"):
+            st.caption("Útil para usar uma demanda diferente da atual ou quando ainda não processou o MRP")
+            _f_dem_sug = st.file_uploader(
+                "Arquivo de demanda (CSV ou Excel)",
+                type=["csv", "xlsx", "xls", "txt"],
+                key="up_dem_rateio_sug",
+            )
+            if _f_dem_sug is not None:
+                try:
+                    if _f_dem_sug.name.endswith((".xlsx", ".xls")):
+                        _df_dem_imp = pd.read_excel(_f_dem_sug)
+                    else:
+                        _raw = _f_dem_sug.read()
+                        _sep = ";" if b";" in _raw[:500] else "\t" if b"\t" in _raw[:500] else ","
+                        _df_dem_imp = pd.read_csv(io.BytesIO(_raw), sep=_sep, dtype=str)
 
-                    col_aceitar, col_descartar = st.columns(2)
-                    with col_aceitar:
-                        if st.button(f"✅ Aceitar", key=f"sug_aceitar_{i}"):
-                            # Salvar no rateio_manual (proporcao_pct = 0-100)
-                            _nova_linha = {
-                                "departamento": sug["departamento"],
-                                "programa_orcamentario": sug["programa_orcamentario"],
-                                "proporcao_pct": (sug["proporcao"] * 100) if sug["proporcao"] else 100.0,
+                    # Normalizar colunas para o padrão transformar_demanda_dtm
+                    _col_map = {
+                        "CÓDIGO SAP": "material", "CÓDIGO": "material", "COD": "material",
+                        "DEP.": "departamento", "DEP": "departamento", "DEPARTAMENTO": "departamento",
+                        "AÇÃO / PROJETO": "programa_orcamentario", "AÇÃO/PROJETO": "programa_orcamentario",
+                        "AÇÃO": "programa_orcamentario", "PROJETO": "programa_orcamentario",
+                        "QTD": "quantidade", "QUANTIDADE": "quantidade",
+                    }
+                    _df_dem_imp.columns = [_col_map.get(c.strip().upper(), c) for c in _df_dem_imp.columns]
+
+                    if "material" in _df_dem_imp.columns and "departamento" in _df_dem_imp.columns:
+                        _df_dem_imp["material"] = _df_dem_imp["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
+                        if "quantidade" not in _df_dem_imp.columns:
+                            _df_dem_imp["quantidade"] = 1
+                        else:
+                            _df_dem_imp["quantidade"] = pd.to_numeric(_df_dem_imp["quantidade"].astype(str).str.replace(",", "."), errors="coerce").fillna(1)
+
+                        if "programa_orcamentario" not in _df_dem_imp.columns:
+                            _df_dem_imp["programa_orcamentario"] = ""
+
+                        # Filtrar apenas materiais sem rateio atual
+                        _df_dem_filtrado_imp = _df_dem_imp[
+                            _df_dem_imp["material"].isin(_mats_sem_rateio) &
+                            _df_dem_imp["departamento"].fillna("").str.strip().ne("")
+                        ]
+                        if not _df_dem_filtrado_imp.empty:
+                            _rateio_imp = derivar_rateio_da_demanda(_df_dem_filtrado_imp)
+                            for _, rrow in _rateio_imp.iterrows():
+                                mat = str(rrow["material"]).strip()
+                                if mat not in _sugestoes_demanda:
+                                    _sugestoes_demanda[mat] = []
+                                    _sugestoes_demanda[mat].append({
+                                        "departamento"        : rrow["departamento"],
+                                        "programa_orcamentario": rrow.get("programa_orcamentario"),
+                                        "proporcao"           : float(rrow["proporcao"]),
+                                    })
+                            st.success(f"✅ {len(_rateio_imp['material'].unique())} material(is) com rateio extraído do arquivo")
+                        else:
+                            st.warning("Nenhum material pendente encontrado no arquivo importado.")
+                    else:
+                        st.error(f"Colunas obrigatórias não encontradas. Encontradas: {list(_df_dem_imp.columns)}")
+                except Exception as _e_imp:
+                    st.error(f"Erro ao importar arquivo: {_e_imp}")
+
+        # ── Exibir sugestões da demanda ────────────────────────────────────────
+        if _sugestoes_demanda:
+            st.info(f"✨ **{len(_sugestoes_demanda)} material(is)** com rateio identificado na demanda")
+
+            # Botão para aceitar TODOS de uma vez
+            if st.button("✅ Aceitar todos os rateios da demanda", type="primary", key="aceitar_todos_dem"):
+                _n_aceitos = 0
+                for _mat_sug, _linhas_sug in _sugestoes_demanda.items():
+                    _salvar_rateio_manual(_mat_sug, [
+                        {
+                            "departamento"        : l["departamento"],
+                            "programa_orcamentario": l.get("programa_orcamentario") or "",
+                            "proporcao_pct"       : round(l["proporcao"] * 100, 4),
+                        }
+                        for l in _linhas_sug
+                    ])
+                    _n_aceitos += 1
+                _atualizar_rateio_session()
+                st.success(f"✅ {_n_aceitos} material(is) com rateio salvo!")
+                st.rerun()
+
+            st.caption("Ou aceite individualmente:")
+
+            for _mat_sug, _linhas_sug in sorted(_sugestoes_demanda.items()):
+                _desc_sug = _desc_map.get(_mat_sug, "")
+                with st.expander(f"**{_mat_sug}** {_desc_sug}"):
+                    _df_sug_show = pd.DataFrame(_linhas_sug)
+                    _df_sug_show["proporcao"] = (_df_sug_show["proporcao"] * 100).round(1).astype(str) + "%"
+                    st.dataframe(_df_sug_show[["departamento", "programa_orcamentario", "proporcao"]], hide_index=True, use_container_width=True)
+
+                    if st.button(f"✅ Aceitar rateio para {_mat_sug}", key=f"sug_dem_aceitar_{_mat_sug}"):
+                        _salvar_rateio_manual(_mat_sug, [
+                            {
+                                "departamento"        : l["departamento"],
+                                "programa_orcamentario": l.get("programa_orcamentario") or "",
+                                "proporcao_pct"       : round(l["proporcao"] * 100, 4),
                             }
-                            _salvar_rateio_manual(sug["material"], [_nova_linha])
-                            st.success(f"✅ Rateio aceito para material {sug['material']}")
+                            for l in _linhas_sug
+                        ])
+                        _atualizar_rateio_session()
+                        st.success(f"✅ Salvo!")
+                        st.rerun()
+
+        # ── Fonte 3: sugestões históricas para materiais não encontrados na demanda atual ──
+        _mats_ainda_sem = _mats_sem_rateio - set(_sugestoes_demanda.keys())
+        if _mats_ainda_sem:
+            _sugestoes_hist = [
+                s for s in _sugestoes_rateio_historico(
+                    _df_nao_def_para_sug[_df_nao_def_para_sug["material"].astype(str).isin(_mats_ainda_sem)]
+                )
+            ]
+            if _sugestoes_hist:
+                st.markdown("**🕐 Do histórico de demandas anteriores**")
+                st.caption(f"{len(_sugestoes_hist)} material(is) encontrado(s) em revisões anteriores")
+
+                for i, sug in enumerate(_sugestoes_hist):
+                    _desc_h = _desc_map.get(sug["material"], "")
+                    with st.expander(f"**{sug['material']}** {_desc_h} — revisão {sug['revisao']}"):
+                        col1, col2, col3 = st.columns([2, 2, 1])
+                        col1.write(f"**Departamento:** {sug['departamento']}")
+                        col2.write(f"**Programa:** {sug['programa_orcamentario'] or '—'}")
+                        col3.write(f"**Proporção:** {(sug['proporcao']*100):.1f}%" if sug['proporcao'] else "100%")
+                        if st.button(f"✅ Aceitar", key=f"sug_hist_{i}"):
+                            _salvar_rateio_manual(sug["material"], [{
+                                "departamento"        : sug["departamento"],
+                                "programa_orcamentario": sug["programa_orcamentario"] or "",
+                                "proporcao_pct"       : (sug["proporcao"] * 100) if sug["proporcao"] else 100.0,
+                            }])
                             _atualizar_rateio_session()
+                            st.success(f"✅ Rateio aceito!")
                             st.rerun()
 
-                    with col_descartar:
-                        st.caption("(rolar para sair)")
-        else:
-            st.success("✅ Nenhuma sugestão de rateio histórico — todos os materiais têm rateio ou nunca foram demandados.")
+        if not _sugestoes_demanda and not _mats_sem_rateio:
+            st.success("✅ Todos os materiais têm rateio definido.")
+        elif not _sugestoes_demanda and _mats_ainda_sem and not _sugestoes_hist if "_sugestoes_hist" in dir() else True:
+            st.warning(f"Sem sugestões automáticas para {len(_mats_ainda_sem)} material(is). Use o formulário abaixo para atribuir manualmente.")
 
         st.divider()
 
