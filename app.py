@@ -215,18 +215,21 @@ def _mtime(path: str) -> float:
         return 0.0
 
 
-@st.cache_data(show_spinner=False)
 def _cached_ler_materiais(path: str, _mtime: float) -> pd.DataFrame:
+    # SEM CACHE: arquivo de materiais muda frequentemente e mudanças precisam
+    # ser refletidas imediatamente (novos materiais, alterações, etc)
     return ler_materiais(path)
 
 
-@st.cache_data(show_spinner=False)
 def _cached_ler_lead_times(path: str, _mtime: float) -> dict:
+    # SEM CACHE: lead times podem ser ajustados e mudanças precisam
+    # ser refletidas imediatamente nos cálculos de MRP
     return ler_lead_times(path)
 
 
-@st.cache_data(show_spinner=False)
 def _cached_ler_mb51(path: str, _mtime: float) -> pd.DataFrame:
+    # SEM CACHE: estoque é dinâmico, recebimentos e saídas alteram
+    # o histórico constantemente e precisam ser refletidos imediatamente
     return ler_historico_mb51(path)
 
 
@@ -236,14 +239,15 @@ def _cached_ler_politica(path: str, _mtime: float) -> dict:
     return ler_politica_pagamento(path)
 
 
-@st.cache_data(show_spinner=False)
 def _cached_ler_contratos(path: str, _mtime: float) -> pd.DataFrame:
+    # SEM CACHE: contratos podem ter aditivos e políticas podem mudar,
+    # alterações precisam ser refletidas imediatamente nos cálculos
     return ler_contratos_sap(path)
 
 
-@st.cache_data(show_spinner=False)
 def _cached_transformar_demanda(path: str, _mtime: float) -> pd.DataFrame:
-    """Lê e transforma o arquivo de demanda DTM. Cacheado por mtime do arquivo."""
+    # SEM CACHE: demanda é o principal driver do MRP e muda frequentemente
+    # (remessas, alterações de previsão), mudanças precisam ser refletidas imediatamente
     return transformar_demanda_dtm(path)
 
 
