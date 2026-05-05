@@ -1029,18 +1029,30 @@ if _disparar:
                         continue
                     _contrato_ref = _row["documento_referencia"]
                     _pedido_ref   = _row.get("numero_pedido")
+
+                    # Normalizar: "nan", "None", "" → None para evitar falsos positivos
+                    def _val_doc(v):
+                        s = str(v).strip() if v is not None else ""
+                        return s if s and s.lower() not in ("nan", "none", "<na>") else None
+
+                    _contrato_ref = _val_doc(_contrato_ref)
+                    _pedido_ref   = _val_doc(_pedido_ref)
+
                     _dias = None
-                    if _contrato_ref and str(_contrato_ref) in politica_pag_carregada:
-                        _dias = politica_pag_carregada[str(_contrato_ref)]
-                    if _dias is None and _pedido_ref and str(_pedido_ref) in politica_pag_carregada:
-                        _dias = politica_pag_carregada[str(_pedido_ref)]
+                    _politica_fonte = "fallback [60,90]"
+                    if _contrato_ref and _contrato_ref in politica_pag_carregada:
+                        _dias = politica_pag_carregada[_contrato_ref]
+                        _politica_fonte = f"contrato:{_contrato_ref}"
+                    if _dias is None and _pedido_ref and _pedido_ref in politica_pag_carregada:
+                        _dias = politica_pag_carregada[_pedido_ref]
+                        _politica_fonte = f"pedido:{_pedido_ref}"
                     if _dias is None:
                         _dias = [60, 90]
                         _log_sem_politica.append({
                             "origem"      : _row["origem"],
                             "material"    : _row["material"],
-                            "contrato"    : _contrato_ref,
-                            "pedido"      : _pedido_ref,
+                            "contrato"    : _contrato_ref or "—",
+                            "pedido"      : _pedido_ref   or "—",
                             "valor_pedido": _row["valor_pedido"],
                         })
                     _n     = len(_dias)
@@ -1049,13 +1061,16 @@ if _disparar:
                     for _i, _d in enumerate(_dias):
                         _parcelas.append({
                             "origem"              : _row["origem"],
+                            "numero_pedido"       : _pedido_ref   or "—",
+                            "contrato"            : _contrato_ref or "—",
+                            "politica_fonte"      : _politica_fonte,
                             "material"            : _row["material"],
                             "quantidade"          : _row.get("quantidade", 0),
                             "mes_emissao"         : _row.get("mes_pedido", "-"),
                             "mes_entrega"         : _row.get("mes_entrega", "-"),
                             "prazo_dias"          : _d,
                             "mes_pagamento"       : (_data_base + timedelta(days=_d)).strftime("%Y-%m"),
-                            "valor_pedido_total"  : _row["valor_pedido"],   # valor integral do pedido (sem split)
+                            "valor_pedido_total"  : _row["valor_pedido"],
                             "valor_parcela"       : _resto if _i == _n - 1 else _vbase,
                             "num_parcela"         : _i + 1,
                             "tot_parcelas"        : _n,
@@ -1645,6 +1660,24 @@ if "resultado" in st.session_state:
     with tab_fin:
         st.subheader("Visão Financeira")
 
+        # ── Alerta política sem match (visível logo de cara) ──────────────────
+        if log_sem_pol:
+            _sem_pol_df = pd.DataFrame(log_sem_pol).drop_duplicates()
+            st.warning(
+                f"⚠️ **{len(_sem_pol_df)} linha(s) sem política de pagamento cadastrada** — "
+                f"usando fallback padrão **60/90 dias**. "
+                f"Verifique os contratos/pedidos abaixo e cadastre-os no arquivo de política."
+            )
+            with st.expander("🔍 Ver documentos sem política (clique para expandir)"):
+                st.dataframe(
+                    _sem_pol_df.rename(columns={
+                        "origem": "Origem", "material": "Material",
+                        "contrato": "Contrato", "pedido": "Nº Pedido",
+                        "valor_pedido": "Valor (R$)",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+
         # ── Raio-X de Auditoria (sempre visível, antes dos filtros) ──────────
         with st.expander("🕵️ Raio-X de Auditoria Financeira (Buscando Divergências)", expanded=False):
 
@@ -1926,6 +1959,7 @@ if "resultado" in st.session_state:
                                 st.info("Nenhum registro para este mês/origem.")
                             else:
                                 _orc_dcols = [c for c in [
+                                    "numero_pedido", "documento_referencia",
                                     "material", "origem",
                                     "mes_pedido", "mes_entrega",
                                     "quantidade",
@@ -1935,6 +1969,8 @@ if "resultado" in st.session_state:
                                 _detail_orc_show = (
                                     _detail_orc[_orc_dcols]
                                     .rename(columns={
+                                        "numero_pedido"         : "Nº Pedido",
+                                        "documento_referencia"  : "Contrato/Ref.",
                                         "material"              : "Material",
                                         "origem"                : "Origem",
                                         "mes_pedido"            : "Mês Emissão",
@@ -2157,6 +2193,9 @@ if "resultado" in st.session_state:
                                     _detail_cx["Parcela"] = "-"
 
                                 _cx_dcols = [c for c in [
+                                    "numero_pedido",      # nº do pedido SAP
+                                    "contrato",           # nº do contrato SAP
+                                    "politica_fonte",     # de onde veio a política
                                     "material", "origem",
                                     "mes_emissao",        # data geração pedido
                                     "mes_entrega",        # data chegada do material
@@ -2172,6 +2211,9 @@ if "resultado" in st.session_state:
                                 _detail_cx_show = (
                                     _detail_cx[_cx_dcols]
                                     .rename(columns={
+                                        "numero_pedido"         : "Nº Pedido",
+                                        "contrato"              : "Contrato",
+                                        "politica_fonte"        : "Política Aplicada",
                                         "material"              : "Material",
                                         "origem"                : "Origem",
                                         "mes_emissao"           : "Data Emissão PO",
