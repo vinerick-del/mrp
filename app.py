@@ -2724,14 +2724,32 @@ if "resultado" in st.session_state:
             st.info("Nenhum dado de rateio disponível. Processe o MRP primeiro.")
         else:
             _df_nao_def = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy()
+
+            # ── Filtro por período de entrega (apenas de hoje em diante) ─────────
+            _mes_atual = pd.Timestamp.now().to_period("M").astype(str)  # ex: "2026-05"
+            if "periodo_entrega" in _df_nao_def.columns:
+                _df_nao_def_futuro = _df_nao_def[
+                    (_df_nao_def["periodo_entrega"].astype(str) >= _mes_atual) |
+                    (_df_nao_def["periodo_entrega"].isna())  # manter NaT por segurança
+                ].copy()
+                _n_com_data_futura = len(_df_nao_def_futuro["material"].unique())
+                _n_total_sem_rateio = len(_df_nao_def["material"].unique())
+                _n_vencidos = _n_total_sem_rateio - _n_com_data_futura
+
+                if _n_vencidos > 0:
+                    st.info(f"📅 Filtrando por período de entrega: **{_mes_atual}** em diante  \n"
+                           f"({_n_com_data_futura} de {_n_total_sem_rateio} materiais ainda pendentes de atribuição)")
+
+                _df_nao_def = _df_nao_def_futuro
+
             _mats_nao_def = sorted(_df_nao_def["material"].astype(str).unique().tolist()) \
                 if not _df_nao_def.empty else []
 
             n_pend = len(_mats_nao_def)
             if n_pend > 0:
-                st.warning(f"⚠️ **{n_pend} material(is) pendente(s) de rateio manual**")
+                st.warning(f"⚠️ **{n_pend} material(is) pendente(s) de rateio manual** (período atual e futuros)")
             else:
-                st.success("✅ Todos os materiais têm rateio definido.")
+                st.success("✅ Todos os materiais com data futura têm rateio definido.")
 
             if not _df_nao_def.empty:
                 def _motivo(mat: str) -> str:
@@ -2746,7 +2764,10 @@ if "resultado" in st.session_state:
 
                 _sumario = (
                     _df_nao_def.groupby("material", as_index=False)
-                    .agg(qtd_total_rateada=("qtd_rateada", "sum"))
+                    .agg(
+                        qtd_total_rateada=("qtd_rateada", "sum"),
+                        periodo_entrega=("periodo_entrega", "min"),  # mostrar período de entrega
+                    )
                 )
                 _sumario["material"]    = _sumario["material"].astype(str)
                 _sumario["descricao"]   = _sumario["material"].map(_desc_map).fillna("-")
@@ -2754,7 +2775,7 @@ if "resultado" in st.session_state:
                 _sumario["valor_total"] = (_sumario["qtd_total_rateada"] * _sumario["valor_unit"]).round(2)
                 _sumario["motivo"]      = _sumario["material"].apply(_motivo)
                 st.dataframe(
-                    _sumario[["material", "descricao", "qtd_total_rateada", "valor_total", "motivo"]],
+                    _sumario[["material", "periodo_entrega", "descricao", "qtd_total_rateada", "valor_total", "motivo"]],
                     use_container_width=True,
                     hide_index=True,
                 )
