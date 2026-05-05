@@ -1008,7 +1008,10 @@ if _disparar:
                         _tmp3["mes_entrega"] + "-15", format="%Y-%m-%d", errors="coerce"
                     )
                 _tmp3["documento_referencia"] = None
-                _tmp3["numero_pedido"]        = None
+                # Preservar numero_pedido extraído pelo ler_historico_mb51
+                # (coluna "pedido" do arquivo SAP MB51 → usado para lookup de política)
+                if "numero_pedido" not in _tmp3.columns:
+                    _tmp3["numero_pedido"] = None
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
                 _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
                                           "mes_pedido","mes_entrega","data_base_pagamento",
