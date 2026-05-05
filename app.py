@@ -1030,30 +1030,61 @@ if _disparar:
                     _contrato_ref = _row["documento_referencia"]
                     _pedido_ref   = _row.get("numero_pedido")
 
-                    # Normalizar: "nan", "None", "" → None para evitar falsos positivos
+                    # Normaliza valor de documento para string limpa ou None
                     def _val_doc(v):
                         s = str(v).strip() if v is not None else ""
-                        return s if s and s.lower() not in ("nan", "none", "<na>") else None
+                        if not s or s.lower() in ("nan", "none", "<na>", "0", ""):
+                            return None
+                        # Remove sufixo ".0" gerado quando SAP exporta PO como float
+                        if s.endswith(".0") and s[:-2].isdigit():
+                            s = s[:-2]
+                        return s
+
+                    # Busca na política tentando múltiplas formas do mesmo número
+                    def _buscar_politica(chave: str | None) -> list | None:
+                        if not chave:
+                            return None
+                        # 1. Exata
+                        if chave in politica_pag_carregada:
+                            return politica_pag_carregada[chave]
+                        # 2. Como inteiro (remove zeros à esquerda e ".0")
+                        try:
+                            chave_int = str(int(float(chave)))
+                            if chave_int in politica_pag_carregada:
+                                return politica_pag_carregada[chave_int]
+                        except (ValueError, OverflowError):
+                            pass
+                        # 3. Com zeros à esquerda (10 dígitos, padrão SAP)
+                        chave_pad = chave.zfill(10)
+                        if chave_pad in politica_pag_carregada:
+                            return politica_pag_carregada[chave_pad]
+                        return None
 
                     _contrato_ref = _val_doc(_contrato_ref)
                     _pedido_ref   = _val_doc(_pedido_ref)
 
                     _dias = None
                     _politica_fonte = "fallback [60,90]"
-                    if _contrato_ref and _contrato_ref in politica_pag_carregada:
-                        _dias = politica_pag_carregada[_contrato_ref]
-                        _politica_fonte = f"contrato:{_contrato_ref}"
-                    if _dias is None and _pedido_ref and _pedido_ref in politica_pag_carregada:
-                        _dias = politica_pag_carregada[_pedido_ref]
-                        _politica_fonte = f"pedido:{_pedido_ref}"
+                    if _contrato_ref:
+                        _match = _buscar_politica(_contrato_ref)
+                        if _match:
+                            _dias = _match
+                            _politica_fonte = f"contrato:{_contrato_ref}"
+                    if _dias is None and _pedido_ref:
+                        _match = _buscar_politica(_pedido_ref)
+                        if _match:
+                            _dias = _match
+                            _politica_fonte = f"pedido:{_pedido_ref}"
                     if _dias is None:
                         _dias = [60, 90]
                         _log_sem_politica.append({
-                            "origem"      : _row["origem"],
-                            "material"    : _row["material"],
-                            "contrato"    : _contrato_ref or "—",
-                            "pedido"      : _pedido_ref   or "—",
-                            "valor_pedido": _row["valor_pedido"],
+                            "origem"        : _row["origem"],
+                            "material"      : _row["material"],
+                            "contrato_raw"  : str(_row["documento_referencia"]),
+                            "contrato_norm" : _contrato_ref or "—",
+                            "pedido_raw"    : str(_row.get("numero_pedido", "")),
+                            "pedido_norm"   : _pedido_ref or "—",
+                            "valor_pedido"  : _row["valor_pedido"],
                         })
                     _n     = len(_dias)
                     _vbase = round(_row["valor_pedido"] / _n, 2)
@@ -1668,12 +1699,18 @@ if "resultado" in st.session_state:
                 f"usando fallback padrão **60/90 dias**. "
                 f"Verifique os contratos/pedidos abaixo e cadastre-os no arquivo de política."
             )
-            with st.expander("🔍 Ver documentos sem política (clique para expandir)"):
+            with st.expander("🔍 Ver documentos sem política — valores brutos vs normalizados"):
+                st.caption("Compare 'raw' (como vem do SAP) com 'norm' (como o sistema busca). "
+                           "O campo no arquivo de política deve bater com o valor 'norm'.")
                 st.dataframe(
                     _sem_pol_df.rename(columns={
-                        "origem": "Origem", "material": "Material",
-                        "contrato": "Contrato", "pedido": "Nº Pedido",
-                        "valor_pedido": "Valor (R$)",
+                        "origem"        : "Origem",
+                        "material"      : "Material",
+                        "contrato_raw"  : "Contrato (SAP)",
+                        "contrato_norm" : "Contrato (norm)",
+                        "pedido_raw"    : "Pedido (SAP)",
+                        "pedido_norm"   : "Pedido (norm)",
+                        "valor_pedido"  : "Valor (R$)",
                     }),
                     use_container_width=True, hide_index=True,
                 )
