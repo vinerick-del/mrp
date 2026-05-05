@@ -2726,7 +2726,7 @@ if "resultado" in st.session_state:
             _df_nao_def = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy()
 
             # ── Filtro por período de entrega (apenas de hoje em diante) ─────────
-            _mes_atual = pd.Timestamp.now().to_period("M").astype(str)  # ex: "2026-05"
+            _mes_atual = str(pd.Timestamp.now().to_period("M"))  # ex: "2026-05"
             if "periodo_entrega" in _df_nao_def.columns:
                 _df_nao_def_futuro = _df_nao_def[
                     (_df_nao_def["periodo_entrega"].astype(str) >= _mes_atual) |
