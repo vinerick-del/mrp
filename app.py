@@ -427,6 +427,106 @@ def _atualizar_rateio_session() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HELPERS: HISTÓRICO DE DEMANDA PARA RECUPERAR RATEIOS ANTERIORES
+# ─────────────────────────────────────────────────────────────────────────────
+_HISTORICO_DEMANDA_DIR = os.path.join(DIR_DADOS, "demanda_historico")
+
+
+def _guardar_demanda_historico(demanda_df: pd.DataFrame) -> None:
+    """
+    Salva uma revisão da demanda com timestamp.
+    Mantém os últimos 50 arquivos de histórico.
+    """
+    if demanda_df.empty:
+        return
+
+    os.makedirs(_HISTORICO_DEMANDA_DIR, exist_ok=True)
+
+    # Nome: demanda_dtm_rev_YYYYMMDD_HHMMSS.csv
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    arquivo = os.path.join(_HISTORICO_DEMANDA_DIR, f"demanda_dtm_rev_{timestamp}.csv")
+
+    demanda_df.to_csv(arquivo, index=False, sep=";")
+
+    # Limpar arquivos antigos (manter últimos 50)
+    arquivos = sorted([
+        f for f in os.listdir(_HISTORICO_DEMANDA_DIR)
+        if f.startswith("demanda_dtm_rev_")
+    ])
+    if len(arquivos) > 50:
+        for f in arquivos[:-50]:
+            try:
+                os.remove(os.path.join(_HISTORICO_DEMANDA_DIR, f))
+            except:
+                pass
+
+
+def _procurar_rateio_historico(material: str) -> dict | None:
+    """
+    Procura nas demandas históricas a ÚLTIMA que tinha rateio para o material.
+    Retorna dict com {departamento, programa_orcamentario, proporcao, data_revisao}
+    ou None se não encontrar.
+    """
+    if not os.path.exists(_HISTORICO_DEMANDA_DIR):
+        return None
+
+    material_str = str(material).strip()
+
+    # Arquivos ordenados por data DESC (mais recentes primeiro)
+    arquivos = sorted([
+        f for f in os.listdir(_HISTORICO_DEMANDA_DIR)
+        if f.startswith("demanda_dtm_rev_")
+    ], reverse=True)
+
+    for arquivo in arquivos:
+        try:
+            caminho = os.path.join(_HISTORICO_DEMANDA_DIR, arquivo)
+            df = pd.read_csv(caminho, sep=";")
+
+            # Procurar o material
+            if "material" in df.columns and "departamento" in df.columns:
+                linha = df[df["material"].astype(str).str.strip() == material_str]
+                if not linha.empty:
+                    dept = linha["departamento"].iloc[0]
+                    prog = linha.get("programa_orcamentario", [None]).iloc[0] if "programa_orcamentario" in linha.columns else None
+                    prop = linha.get("proporcao", [None]).iloc[0] if "proporcao" in linha.columns else None
+
+                    # Se encontrou com departamento preenchido, retornar
+                    if pd.notna(dept) and str(dept).strip() not in ["", "nan", "NaN"]:
+                        return {
+                            "material": material_str,
+                            "departamento": str(dept).strip(),
+                            "programa_orcamentario": str(prog).strip() if pd.notna(prog) else None,
+                            "proporcao": float(prop) if pd.notna(prop) else None,
+                            "revisao": arquivo.replace("demanda_dtm_rev_", "").replace(".csv", ""),
+                        }
+        except Exception as e:
+            print(f"Erro ao ler {arquivo}: {e}")
+            continue
+
+    return None
+
+
+def _sugestoes_rateio_historico(df_nao_def: pd.DataFrame) -> list[dict]:
+    """
+    Retorna lista de sugestões de rateio histórico para materiais sem rateio.
+    """
+    sugestoes = []
+
+    if df_nao_def.empty or "material" not in df_nao_def.columns:
+        return sugestoes
+
+    mats_sem_rateio = df_nao_def["material"].astype(str).unique()
+
+    for mat in mats_sem_rateio:
+        rateio_hist = _procurar_rateio_historico(mat)
+        if rateio_hist:
+            sugestoes.append(rateio_hist)
+
+    return sugestoes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPER: calcular alertas a partir dos resultados MRP
 # ─────────────────────────────────────────────────────────────────────────────
 def _calcular_alertas(
@@ -893,6 +993,10 @@ if _disparar:
                     if _raw_path and os.path.exists(_raw_path)
                     else pd.DataFrame()
                 )
+
+            # Guardar revisão de demanda para recuperação de rateios históricos
+            _guardar_demanda_historico(_demanda_detail_raw if not _demanda_detail_raw.empty else demanda)
+
             estoque                  = passo_3_estoque()
             entradas, df_abertos_fut = passo_4_pedidos_abertos()
             abc        = _cached_passo5_abc(demanda, materiais, contratos if not contratos.empty else pd.DataFrame())
@@ -2780,6 +2884,44 @@ if "resultado" in st.session_state:
                     use_container_width=True,
                     hide_index=True,
                 )
+
+        # ── Seção 1.5: Sugestões de rateio histórico ──────────────────────────
+        st.markdown("#### 💡 Sugestões de Rateio Histórico")
+
+        _df_nao_def_para_sugestoes = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy() if not df_rateio.empty else pd.DataFrame()
+        _sugestoes = _sugestoes_rateio_historico(_df_nao_def_para_sugestoes)
+
+        if _sugestoes:
+            st.info(f"✨ Encontradas **{len(_sugestoes)} sugestão(ões)** de rateio histórico")
+
+            for i, sug in enumerate(_sugestoes):
+                with st.expander(f"Material {sug['material']} → {sug['departamento']} (revisão: {sug['revisao']})"):
+                    col1, col2, col3 = st.columns([2, 2, 1])
+                    with col1:
+                        st.write(f"**Departamento:** {sug['departamento']}")
+                    with col2:
+                        st.write(f"**Programa:** {sug['programa_orcamentario'] or '(não definido)'}")
+                    with col3:
+                        st.write(f"**Proporção:** {(sug['proporcao']*100):.1f}%" if sug['proporcao'] else "100%")
+
+                    col_aceitar, col_descartar = st.columns(2)
+                    with col_aceitar:
+                        if st.button(f"✅ Aceitar", key=f"sug_aceitar_{i}"):
+                            # Salvar no rateio_manual (proporcao_pct = 0-100)
+                            _nova_linha = {
+                                "departamento": sug["departamento"],
+                                "programa_orcamentario": sug["programa_orcamentario"],
+                                "proporcao_pct": (sug["proporcao"] * 100) if sug["proporcao"] else 100.0,
+                            }
+                            _salvar_rateio_manual(sug["material"], [_nova_linha])
+                            st.success(f"✅ Rateio aceito para material {sug['material']}")
+                            _atualizar_rateio_session()
+                            st.rerun()
+
+                    with col_descartar:
+                        st.caption("(rolar para sair)")
+        else:
+            st.success("✅ Nenhuma sugestão de rateio histórico — todos os materiais têm rateio ou nunca foram demandados.")
 
         st.divider()
 
