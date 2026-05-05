@@ -915,6 +915,13 @@ if _disparar:
                 if politica_path else {}
             )
 
+            # DEBUG: mostrar o que foi carregado da política
+            print(f"\n  [POLÍTICA] Carregada com {len(politica_pag_carregada)} entrada(s):")
+            for _doc, _dias in list(politica_pag_carregada.items())[:10]:
+                print(f"    {_doc!r:20s} → {_dias}")
+            if len(politica_pag_carregada) > 10:
+                print(f"    ... + {len(politica_pag_carregada)-10} mais")
+
             # Alertas
             alertas_rup, alertas_cont = _calcular_alertas(df_mrp, df_ped, contratos)
 
@@ -1077,6 +1084,14 @@ if _disparar:
                             _politica_fonte = f"pedido:{_pedido_ref}"
                     if _dias is None:
                         _dias = [60, 90]
+                        # DEBUG detalhado
+                        _raw_ped = str(_row.get("numero_pedido", "")).strip()
+                        print(f"  [FALLBACK] Mat={_row['material']} | "
+                              f"Contrato_raw={str(_row['documento_referencia'])!r} "
+                              f"Contrato_norm={_contrato_ref!r} | "
+                              f"Pedido_raw={_raw_ped!r} "
+                              f"Pedido_norm={_pedido_ref!r} | "
+                              f"Em política: {list(politica_pag_carregada.keys())}")
                         _log_sem_politica.append({
                             "origem"        : _row["origem"],
                             "material"      : _row["material"],
