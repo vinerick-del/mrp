@@ -216,7 +216,6 @@ def _mtime(path: str) -> float:
 
 
 @st.cache_data(show_spinner=False)
-@st.cache_data(show_spinner=False)
 def _cached_ler_materiais(path: str, _mtime: float) -> pd.DataFrame:
     return ler_materiais(path)
 
@@ -231,8 +230,9 @@ def _cached_ler_mb51(path: str, _mtime: float) -> pd.DataFrame:
     return ler_historico_mb51(path)
 
 
-@st.cache_data(show_spinner=False)
 def _cached_ler_politica(path: str, _mtime: float) -> dict:
+    # NÃO USAR CACHE: arquivo de política é pequeno e mudanças precisam
+    # ser refletidas imediatamente quando o usuário modifica o arquivo
     return ler_politica_pagamento(path)
 
 
