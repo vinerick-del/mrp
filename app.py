@@ -37,6 +37,7 @@ from mrp import (
     ler_politica_pagamento,
     derivar_rateio_da_demanda,
     transformar_demanda_dtm,
+    ler_fornecedor_por_po,
     ARQUIVO_DEMANDA_RAW,
     DIR_DADOS,
     DIR_SAIDA,
@@ -1003,35 +1004,46 @@ if _disparar:
                     )
                 _tmp3["documento_referencia"] = None
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
-                # Lookup do fornecedor pelo numero_pedido do MB51 → pedidos abertos
-                # Feito ANTES de zerar numero_pedido, usando o valor original de df_mb51.
-                if not df_abertos_fut.empty and "fornecedor" in df_abertos_fut.columns:
-                    def _norm_po(v) -> str | None:
-                        s = str(v).strip()
-                        if s.lower() in ("nan", "none", "<na>", ""):
-                            return None
-                        if s.endswith(".0") and s[:-2].isdigit():
-                            s = s[:-2]
-                        try:
-                            return str(int(s))  # remove zeros à esquerda
-                        except ValueError:
-                            return s
-                    _forn_lookup: dict[str, str] = {}
-                    if "numero_pedido" in df_abertos_fut.columns:
-                        for _nped, _forn in zip(
-                            df_abertos_fut["numero_pedido"],
-                            df_abertos_fut["fornecedor"],
-                        ):
-                            _k = _norm_po(_nped)
-                            if _k and _k not in _forn_lookup:
-                                _forn_lookup[_k] = str(_forn).strip()
-                    # Mapeia usando numero_pedido original de df_mb51 (antes de ser zerado)
-                    _mb51_num_ped = df_mb51["numero_pedido"] if "numero_pedido" in df_mb51.columns else pd.Series([""] * len(_tmp3), index=_tmp3.index)
-                    _tmp3["fornecedor"] = _mb51_num_ped.apply(
-                        lambda v: _forn_lookup.get(_norm_po(v), "A contratar")
+                # ── Lookup fornecedor: MB51.Pedido → Pedidos/Remessas.Documento de compras ──
+                # Usa df_mb51["numero_pedido"] ANTES de ser zerado abaixo.
+                # Tenta duas fontes: pedidos_abertos (df_abertos_fut) e REMESSAS_SAP.
+                def _norm_po(v) -> str | None:
+                    s = str(v).strip()
+                    if s.lower() in ("nan", "none", "<na>", "—", ""):
+                        return None
+                    if s.endswith(".0") and s[:-2].isdigit():
+                        s = s[:-2]
+                    try:
+                        return str(int(s))
+                    except ValueError:
+                        return s if s else None
+
+                _forn_lookup: dict[str, str] = {}
+                # Fonte 1: pedidos_abertos em aberto (df_abertos_fut)
+                if not df_abertos_fut.empty and "fornecedor" in df_abertos_fut.columns \
+                        and "numero_pedido" in df_abertos_fut.columns:
+                    for _nped, _forn in zip(df_abertos_fut["numero_pedido"],
+                                            df_abertos_fut["fornecedor"]):
+                        _k = _norm_po(_nped)
+                        _fs = str(_forn).strip()
+                        if _k and _fs and _fs.lower() not in ("nan", "none", "<na>", "—", ""):
+                            _forn_lookup.setdefault(_k, _fs)
+                # Fonte 2: REMESSAS_SAP (cobre POs já liquidados que saíram dos pedidos abertos)
+                _rem_path = achar_arquivo("REMESSAS_SAP") or achar_arquivo("REMESSAS_SAP.csv")
+                if _rem_path:
+                    _forn_lookup.update(
+                        {k: v for k, v in ler_fornecedor_por_po(_rem_path).items()
+                         if k not in _forn_lookup}
                     )
-                else:
-                    _tmp3["fornecedor"] = "A contratar"
+                # Mapeia usando numero_pedido original de df_mb51
+                _mb51_num_ped = (
+                    df_mb51["numero_pedido"]
+                    if "numero_pedido" in df_mb51.columns
+                    else pd.Series([""] * len(_tmp3), index=_tmp3.index)
+                )
+                _tmp3["fornecedor"] = _mb51_num_ped.apply(
+                    lambda v: _forn_lookup.get(_norm_po(v), "A contratar")
+                )
                 _tmp3["numero_pedido"] = None
                 _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
                                           "mes_pedido","mes_entrega","data_base_pagamento",

@@ -1299,9 +1299,8 @@ def passo_3_estoque() -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 def _ler_remessas_lookup(source) -> pd.DataFrame:
     """
-    Lê REMESSAS_SAP e devolve apenas as colunas necessárias para enriquecer
-    pedidos_abertos.csv:
-        material | data_remessa | numero_pedido | contrato | mes_pedido
+    Lê REMESSAS_SAP e devolve colunas para enriquecer pedidos_abertos.csv:
+        material | data_remessa | numero_pedido | contrato | mes_pedido | fornecedor
 
     • Linhas com Código de eliminação == 'L' são descartadas.
     • Linhas sem data de remessa são descartadas.
@@ -1319,6 +1318,10 @@ def _ler_remessas_lookup(source) -> pd.DataFrame:
     col_cont = "Contrato básico"      if "Contrato básico"      in df.columns else None
     col_elim = "Código de eliminação" if "Código de eliminação" in df.columns else None
     col_doc  = "Data do documento"    if "Data do documento"    in df.columns else None
+    col_forn = next((c for c in df.columns if c.lower().strip() in (
+        "fornecedor/centro fornecedor", "forn./centro forn.", "fornecedor",
+        "nome do fornecedor", "nome forn.", "vendor", "vendor name", "forn.",
+    )), None)
 
     r = pd.DataFrame()
     r["material"] = df[col_mat].astype(str).str.strip()
@@ -1329,6 +1332,7 @@ def _ler_remessas_lookup(source) -> pd.DataFrame:
     )
     r["numero_pedido"] = df[col_num].astype(str).str.strip()  if col_num  else None
     r["contrato"]      = df[col_cont].astype(str).str.strip() if col_cont else None
+    r["fornecedor"]    = df[col_forn].astype(str).str.strip() if col_forn else None
 
     # mes_pedido = mês de emissão do pedido (Data do documento)
     if col_doc and col_doc != col_data:
@@ -1352,6 +1356,42 @@ def _ler_remessas_lookup(source) -> pd.DataFrame:
 
     print(f"  Lookup SAP           : {len(r)} registro(s) em {r['material'].nunique()} material(is)")
     return r.reset_index(drop=True)
+
+
+def ler_fornecedor_por_po(source) -> dict[str, str]:
+    """
+    Lê REMESSAS_SAP ou pedidos_abertos e retorna dict normalizado:
+        numero_pedido_normalizado → fornecedor
+
+    Normalização: remove sufixo ".0", remove zeros à esquerda,
+    converte para inteiro string (padrão SAP).
+    """
+    def _norm(v) -> str | None:
+        s = str(v).strip()
+        if s.lower() in ("nan", "none", "<na>", "—", ""):
+            return None
+        if s.endswith(".0") and s[:-2].isdigit():
+            s = s[:-2]
+        try:
+            return str(int(s))
+        except ValueError:
+            return s if s else None
+
+    try:
+        r = _ler_remessas_lookup(source)
+    except Exception:
+        return {}
+
+    if "numero_pedido" not in r.columns or "fornecedor" not in r.columns:
+        return {}
+
+    lookup: dict[str, str] = {}
+    for nped, forn in zip(r["numero_pedido"], r["fornecedor"]):
+        k = _norm(nped)
+        forn_s = str(forn).strip() if forn is not None else ""
+        if k and forn_s and forn_s.lower() not in ("nan", "none", "<na>", "—", ""):
+            lookup.setdefault(k, forn_s)
+    return lookup
 
 
 # ─────────────────────────────────────────────────────────────────────────────
