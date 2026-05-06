@@ -653,6 +653,76 @@ def _sugestoes_demanda_anos_anteriores(mats_sem_rateio: set) -> dict[str, dict]:
     return resultado
 
 
+def _buscar_rateio_mb51_em_cascata(
+    materiais_mb51: set,
+    demanda_atual: pd.DataFrame,
+    rateio_manual_df: pd.DataFrame,
+) -> dict[str, dict]:
+    """
+    Para cada material do MB51, procura rateio em cascata:
+    1. rateio_manual.csv (já cadastrado)
+    2. demanda_atual (DEP. + AÇÃO/PROJETO)
+    3. anos anteriores
+
+    Retorna dict {material: {source, rateio}} onde source = "manual" | "demanda_atual" | "anos_anteriores" | None
+    """
+    resultado = {}
+
+    # 1. Já tem rateio manual?
+    if not rateio_manual_df.empty:
+        _mats_manual = set(rateio_manual_df["material"].astype(str).str.strip())
+        for mat in materiais_mb51 & _mats_manual:
+            _rat_man = rateio_manual_df[rateio_manual_df["material"].astype(str).str.strip() == str(mat)]
+            if not _rat_man.empty:
+                resultado[mat] = {
+                    "source": "manual",
+                    "rateio": [
+                        {
+                            "departamento"        : row["departamento"],
+                            "programa_orcamentario": row.get("programa_orcamentario", ""),
+                            "proporcao"           : row.get("proporcao", 1.0),
+                        }
+                        for _, row in _rat_man.iterrows()
+                    ]
+                }
+
+    # 2. Procurar nas demandas (atual + anos anteriores)
+    _mats_ainda_sem = materiais_mb51 - set(resultado.keys())
+
+    if not _mats_ainda_sem.empty and not demanda_atual.empty and "material" in demanda_atual.columns:
+        _dem_filtrado = demanda_atual[
+            demanda_atual["material"].astype(str).str.strip().isin(_mats_ainda_sem) &
+            demanda_atual.get("departamento", pd.Series([""]*len(demanda_atual))).fillna("").str.strip().ne("")
+        ]
+        if not _dem_filtrado.empty:
+            try:
+                _rateio_dem = derivar_rateio_da_demanda(_dem_filtrado)
+                for _, rrow in _rateio_dem.iterrows():
+                    mat = str(rrow["material"]).strip()
+                    if mat not in resultado:
+                        resultado[mat] = {
+                            "source": "demanda_atual",
+                            "rateio": [{
+                                "departamento"        : rrow["departamento"],
+                                "programa_orcamentario": rrow.get("programa_orcamentario"),
+                                "proporcao"           : float(rrow["proporcao"]),
+                            }]
+                        }
+            except Exception:
+                pass
+
+    # 3. Procurar nos anos anteriores
+    _mats_ainda_sem = materiais_mb51 - set(resultado.keys())
+    _anos_sug = _sugestoes_demanda_anos_anteriores(_mats_ainda_sem)
+    for mat, info in _anos_sug.items():
+        resultado[mat] = {
+            "source": f"anos_anteriores ({info['ano']})",
+            "rateio": info["rateio"],
+        }
+
+    return resultado
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER: calcular alertas a partir dos resultados MRP
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2961,6 +3031,69 @@ if "resultado" in st.session_state:
         _preco_map: dict = {}
         if not _abc_df.empty and "valor_unitario" in _abc_df.columns:
             _preco_map = dict(zip(_abc_df["material"].astype(str), _abc_df["valor_unitario"]))
+
+        # ── Seção 0: Busca automática de rateio para materiais do MB51 ────────
+        _mb51_df   = r.get("historico_mb51", pd.DataFrame())
+        _rm_df_mb = _carregar_rateio_manual()
+
+        if not _mb51_df.empty and "material" in _mb51_df.columns:
+            _mats_mb51 = set(_mb51_df["material"].astype(str).str.strip().unique())
+            _sug_mb51 = _buscar_rateio_mb51_em_cascata(_mats_mb51, _dd_df, _rm_df_mb)
+
+            if _sug_mb51:
+                st.markdown("#### 🔍 Rateio automático encontrado para MB51")
+                st.caption(f"Busca em cascata: rateio_manual → demanda_atual → anos_anteriores")
+
+                _sug_mb51_por_fonte = {}
+                for mat, info in sorted(_sug_mb51.items()):
+                    _fonte = info.get("source", "desconhecido")
+                    if _fonte not in _sug_mb51_por_fonte:
+                        _sug_mb51_por_fonte[_fonte] = []
+                    _sug_mb51_por_fonte[_fonte].append((mat, info))
+
+                for _fonte_nome in sorted(_sug_mb51_por_fonte.keys()):
+                    _items_fonte = _sug_mb51_por_fonte[_fonte_nome]
+                    _emoji_fonte = {"manual": "✅", "demanda_atual": "📊", "anos_anteriores": "📅"}.get(
+                        _fonte_nome.split()[0], "📌"
+                    )
+
+                    with st.expander(f"{_emoji_fonte} {_fonte_nome.upper()} ({len(_items_fonte)} materiais)"):
+                        if st.button(f"✅ Aceitar todos de {_fonte_nome}", key=f"aceitar_mb51_{_fonte_nome}"):
+                            for mat, info in _items_fonte:
+                                _salvar_rateio_manual(mat, [
+                                    {
+                                        "departamento"        : r["departamento"],
+                                        "programa_orcamentario": r.get("programa_orcamentario") or "",
+                                        "proporcao_pct"       : round(r["proporcao"] * 100, 4),
+                                    }
+                                    for r in info["rateio"]
+                                ])
+                            st.session_state.pop("resultado", None)
+                            st.session_state.pop("_auto_processado", None)
+                            st.success(f"✅ {len(_items_fonte)} material(is) salvo! Reprocessando...")
+                            st.rerun()
+
+                        for mat, info in sorted(_items_fonte):
+                            _desc_mb = _desc_map.get(mat, "")
+                            with st.expander(f"**{mat}** {_desc_mb}"):
+                                _df_rat = pd.DataFrame(info["rateio"])
+                                _df_rat["proporcao"] = (_df_rat["proporcao"] * 100).round(1).astype(str) + "%"
+                                st.dataframe(_df_rat[["departamento", "programa_orcamentario", "proporcao"]], hide_index=True, use_container_width=True)
+                                if st.button(f"✅ Aceitar para {mat}", key=f"aceitar_mb51_{mat}"):
+                                    _salvar_rateio_manual(mat, [
+                                        {
+                                            "departamento"        : r["departamento"],
+                                            "programa_orcamentario": r.get("programa_orcamentario") or "",
+                                            "proporcao_pct"       : round(r["proporcao"] * 100, 4),
+                                        }
+                                        for r in info["rateio"]
+                                    ])
+                                    st.session_state.pop("resultado", None)
+                                    st.session_state.pop("_auto_processado", None)
+                                    st.success("✅ Salvo! Reprocessando...")
+                                    st.rerun()
+
+                st.divider()
 
         # ── Seção 1: Log de materiais sem rateio ─────────────────────────────
         st.markdown("#### 📋 Materiais sem rateio definido")
