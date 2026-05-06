@@ -1324,6 +1324,42 @@ if _disparar:
                                           "mes_pedido","mes_entrega","data_base_pagamento",
                                           "documento_referencia","numero_pedido"]])
 
+            # Adicionar demanda vigente (_demanda_detail_raw) ao financeiro
+            # Usa quantidade da demanda × valor unitário de ABC
+            if not _demanda_detail_raw.empty and not abc.empty:
+                _dem_fin = _demanda_detail_raw.copy()
+                if "material" in _dem_fin.columns and "mes" in _dem_fin.columns:
+                    # Normalizar material para merge com ABC
+                    _dem_fin["material"] = _dem_fin["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
+                    _dem_fin["quantidade"] = pd.to_numeric(_dem_fin.get("quantidade", 1), errors="coerce").fillna(1)
+
+                    # Juntar com ABC para obter valor unitário
+                    _abc_price = abc[["material", "valor_unitario"]].copy()
+                    _abc_price["material"] = _abc_price["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
+                    _dem_fin = _dem_fin.merge(_abc_price, on="material", how="left")
+                    _dem_fin["valor_unitario"] = _dem_fin["valor_unitario"].fillna(0)
+                    _dem_fin["valor_pedido"] = (_dem_fin["quantidade"] * _dem_fin["valor_unitario"]).round(2)
+
+                    # Padronizar colunas para concat
+                    _dem_fin["mes_pedido"] = _dem_fin.get("mes", pd.NA)
+                    _dem_fin["mes_entrega"] = _dem_fin["mes_pedido"]
+                    _dem_fin["data_base_pagamento"] = pd.to_datetime(
+                        _dem_fin["mes_pedido"].astype(str) + "-15",
+                        format="%Y-%m-%d", errors="coerce"
+                    )
+                    _dem_fin["documento_referencia"] = None
+                    _dem_fin["numero_pedido"] = None
+                    _dem_fin["origem"] = "Demanda Vigente"
+
+                    _dem_fin_filtered = _dem_fin[
+                        _dem_fin["valor_pedido"] > 0
+                    ][["origem","material","quantidade","valor_pedido",
+                       "mes_pedido","mes_entrega","data_base_pagamento",
+                       "documento_referencia","numero_pedido"]]
+
+                    if not _dem_fin_filtered.empty:
+                        _linhas_fin.append(_dem_fin_filtered)
+
             _df_fin = pd.concat(_linhas_fin, ignore_index=True) if _linhas_fin else pd.DataFrame()
 
             # Visão Orçamentária
