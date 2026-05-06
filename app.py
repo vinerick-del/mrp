@@ -1474,7 +1474,16 @@ if _disparar:
                     _rm_fin_filt = _rm_fin_filt[
                         ["material", "departamento", "programa_orcamentario", "proporcao"]
                     ].copy()
+                    # Garantir proporcoes somam 1.0 por material (evita perda de volume)
+                    _tot_prop = _rm_fin_filt.groupby("material")["proporcao"].transform("sum")
+                    _rm_fin_filt["proporcao"] = (_rm_fin_filt["proporcao"] / _tot_prop.replace(0, 1)).round(6)
                     _base_rateio = pd.concat([_base_rateio, _rm_fin_filt], ignore_index=True)
+
+            # Normalizar proporcoes em _base_rateio para garantir soma = 1.0 por material
+            # Evita perda de volume quando proporções foram salvas de forma inconsistente
+            if not _base_rateio.empty:
+                _tot_prop_base = _base_rateio.groupby("material")["proporcao"].transform("sum")
+                _base_rateio["proporcao"] = (_base_rateio["proporcao"] / _tot_prop_base.replace(0, 1)).round(6)
 
             def _aplicar_rateio_fin(df: pd.DataFrame, col_valor: str) -> pd.DataFrame:
                 if df.empty:
