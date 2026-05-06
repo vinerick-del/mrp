@@ -689,7 +689,7 @@ def _buscar_rateio_mb51_em_cascata(
     # 2. Procurar nas demandas (atual + anos anteriores)
     _mats_ainda_sem = materiais_mb51 - set(resultado.keys())
 
-    if not _mats_ainda_sem.empty and not demanda_atual.empty and "material" in demanda_atual.columns:
+    if _mats_ainda_sem and not demanda_atual.empty and "material" in demanda_atual.columns:
         _dem_filtrado = demanda_atual[
             demanda_atual["material"].astype(str).str.strip().isin(_mats_ainda_sem) &
             demanda_atual.get("departamento", pd.Series([""]*len(demanda_atual))).fillna("").str.strip().ne("")
