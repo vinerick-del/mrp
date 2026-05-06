@@ -932,9 +932,10 @@ if _disparar:
                 _tmp["numero_pedido"]        = None
                 _tmp["origem"]               = _tmp["_origem_mrp"]
                 _tmp["valor_pedido"]         = _tmp["valor_total_pedido"]
+                _tmp["fornecedor"]           = "A contratar"
                 _linhas_fin.append(_tmp[["origem","material","quantidade","valor_pedido",
                                          "mes_pedido","mes_entrega","data_base_pagamento",
-                                         "documento_referencia","numero_pedido"]])
+                                         "documento_referencia","numero_pedido","fornecedor"]])
 
             if not df_abertos_fut.empty:
                 _tmp2 = df_abertos_fut.copy()
@@ -968,9 +969,13 @@ if _disparar:
                 _tmp2["origem"]        = "Pedido Existente (SAP)"
                 _tmp2["valor_pedido"]  = _tmp2["valor_total_pedido"].fillna(0)
                 _tmp2["numero_pedido"] = _tmp2["numero_pedido"].astype(str).str.strip() if "numero_pedido" in _tmp2.columns else None
+                _tmp2["fornecedor"]    = (
+                    _tmp2["fornecedor"].fillna("A contratar").replace({"": "A contratar", "—": "A contratar"})
+                    if "fornecedor" in _tmp2.columns else "A contratar"
+                )
                 _linhas_fin.append(_tmp2[["origem","material","quantidade","valor_pedido",
                                           "mes_pedido","mes_entrega","data_base_pagamento",
-                                          "documento_referencia","numero_pedido"]])
+                                          "documento_referencia","numero_pedido","fornecedor"]])
 
             if not df_mb51.empty:
                 _tmp3 = df_mb51.copy()
@@ -999,9 +1004,23 @@ if _disparar:
                 _tmp3["documento_referencia"] = None
                 _tmp3["numero_pedido"]        = None
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
+                # Tentar enriquecer fornecedor via lookup em pedidos abertos (mesmo PO)
+                if not df_abertos_fut.empty and "fornecedor" in df_abertos_fut.columns and "numero_pedido" in df_abertos_fut.columns:
+                    _forn_lookup = (
+                        df_abertos_fut[["numero_pedido","fornecedor"]]
+                        .dropna(subset=["numero_pedido"])
+                        .drop_duplicates("numero_pedido")
+                        .set_index("numero_pedido")["fornecedor"]
+                        .to_dict()
+                    )
+                    _tmp3["fornecedor"] = (
+                        _tmp3["numero_pedido"].astype(str).map(_forn_lookup).fillna("A contratar")
+                    )
+                else:
+                    _tmp3["fornecedor"] = "A contratar"
                 _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
                                           "mes_pedido","mes_entrega","data_base_pagamento",
-                                          "documento_referencia","numero_pedido"]])
+                                          "documento_referencia","numero_pedido","fornecedor"]])
 
             _df_fin = pd.concat(_linhas_fin, ignore_index=True) if _linhas_fin else pd.DataFrame()
 
@@ -1061,6 +1080,7 @@ if _disparar:
                     for _i, _d in enumerate(_dias):
                         _parcelas.append({
                             "origem"              : _row["origem"],
+                            "fornecedor"          : _row.get("fornecedor", "A contratar"),
                             "numero_pedido"       : _pedido_ref   or "—",
                             "contrato"            : _contrato_ref or "—",
                             "politica_fonte"      : _politica_fonte,
@@ -2297,7 +2317,7 @@ if "resultado" in st.session_state:
                             )
 
                             _trace_cols = [c for c in [
-                                "origem", "material", "descricao", "departamento", "programa_orcamentario",
+                                "origem", "fornecedor", "material", "descricao", "departamento", "programa_orcamentario",
                                 "mes_emissao", "mes_entrega", "quantidade",
                                 "parcela_label", "prazo_dias", "mes_pagamento",
                                 "valor_pedido_total", "valor_parcela", "valor_rateado",
@@ -2306,6 +2326,7 @@ if "resultado" in st.session_state:
                                 _fluxo_trace[_trace_cols]
                                 .rename(columns={
                                     "origem"                : "Origem",
+                                    "fornecedor"            : "Fornecedor",
                                     "material"              : "Material",
                                     "descricao"             : "Descrição",
                                     "departamento"          : "Departamento",
@@ -2356,7 +2377,7 @@ if "resultado" in st.session_state:
                                         _dl_fluxo["parcela_label"] = "-"
 
                                     _dl_cols = [c for c in [
-                                        "origem", "material", "descricao",
+                                        "origem", "fornecedor", "material", "descricao",
                                         "departamento", "programa_orcamentario",
                                         "mes_emissao", "mes_entrega", "quantidade",
                                         "parcela_label", "prazo_dias", "mes_pagamento",
@@ -2366,6 +2387,7 @@ if "resultado" in st.session_state:
                                         _dl_fluxo[_dl_cols]
                                         .rename(columns={
                                             "origem"                : "Origem",
+                                            "fornecedor"            : "Fornecedor",
                                             "material"              : "Material",
                                             "descricao"             : "Descrição",
                                             "departamento"          : "Departamento",
