@@ -930,7 +930,7 @@ if _disparar:
                 _tmp["mes_entrega"]          = _tmp["periodo_entrega"]
                 _tmp["data_base_pagamento"]  = pd.to_datetime(_tmp["data_chegada"], format="%d/%m/%Y", errors="coerce")
                 _tmp["documento_referencia"] = None
-                _tmp["numero_pedido"]        = None
+                _tmp["numero_pedido"]        = "—"
                 _tmp["origem"]               = _tmp["_origem_mrp"]
                 _tmp["valor_pedido"]         = _tmp["valor_total_pedido"]
                 _tmp["fornecedor"]           = "A contratar"
@@ -1003,48 +1003,13 @@ if _disparar:
                         _tmp3["mes_entrega"] + "-15", format="%Y-%m-%d", errors="coerce"
                     )
                 _tmp3["documento_referencia"] = None
+                # Preservar numero_pedido do MB51 (coluna Pedido do relatório SAP)
+                if "numero_pedido" not in _tmp3.columns:
+                    _tmp3["numero_pedido"] = "—"
+                else:
+                    _tmp3["numero_pedido"] = _tmp3["numero_pedido"].fillna("—").astype(str).str.strip()
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
-                # ── Lookup fornecedor: MB51.Pedido → Pedidos/Remessas.Documento de compras ──
-                # Usa df_mb51["numero_pedido"] ANTES de ser zerado abaixo.
-                # Tenta duas fontes: pedidos_abertos (df_abertos_fut) e REMESSAS_SAP.
-                def _norm_po(v) -> str | None:
-                    s = str(v).strip()
-                    if s.lower() in ("nan", "none", "<na>", "—", ""):
-                        return None
-                    if s.endswith(".0") and s[:-2].isdigit():
-                        s = s[:-2]
-                    try:
-                        return str(int(s))
-                    except ValueError:
-                        return s if s else None
-
-                _forn_lookup: dict[str, str] = {}
-                # Fonte 1: pedidos_abertos em aberto (df_abertos_fut)
-                if not df_abertos_fut.empty and "fornecedor" in df_abertos_fut.columns \
-                        and "numero_pedido" in df_abertos_fut.columns:
-                    for _nped, _forn in zip(df_abertos_fut["numero_pedido"],
-                                            df_abertos_fut["fornecedor"]):
-                        _k = _norm_po(_nped)
-                        _fs = str(_forn).strip()
-                        if _k and _fs and _fs.lower() not in ("nan", "none", "<na>", "—", ""):
-                            _forn_lookup.setdefault(_k, _fs)
-                # Fonte 2: REMESSAS_SAP (cobre POs já liquidados que saíram dos pedidos abertos)
-                _rem_path = achar_arquivo("REMESSAS_SAP") or achar_arquivo("REMESSAS_SAP.csv")
-                if _rem_path:
-                    _forn_lookup.update(
-                        {k: v for k, v in ler_fornecedor_por_po(_rem_path).items()
-                         if k not in _forn_lookup}
-                    )
-                # Mapeia usando numero_pedido original de df_mb51
-                _mb51_num_ped = (
-                    df_mb51["numero_pedido"]
-                    if "numero_pedido" in df_mb51.columns
-                    else pd.Series([""] * len(_tmp3), index=_tmp3.index)
-                )
-                _tmp3["fornecedor"] = _mb51_num_ped.apply(
-                    lambda v: _forn_lookup.get(_norm_po(v), "A contratar")
-                )
-                _tmp3["numero_pedido"] = None
+                _tmp3["fornecedor"]           = "A contratar"
                 _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
                                           "mes_pedido","mes_entrega","data_base_pagamento",
                                           "documento_referencia","numero_pedido","fornecedor"]])
@@ -2344,7 +2309,7 @@ if "resultado" in st.session_state:
                             )
 
                             _trace_cols = [c for c in [
-                                "origem", "fornecedor", "material", "descricao", "departamento", "programa_orcamentario",
+                                "origem", "numero_pedido", "fornecedor", "material", "descricao", "departamento", "programa_orcamentario",
                                 "mes_emissao", "mes_entrega", "quantidade",
                                 "parcela_label", "prazo_dias", "mes_pagamento",
                                 "valor_pedido_total", "valor_parcela", "valor_rateado",
@@ -2353,6 +2318,7 @@ if "resultado" in st.session_state:
                                 _fluxo_trace[_trace_cols]
                                 .rename(columns={
                                     "origem"                : "Origem",
+                                    "numero_pedido"         : "Nº Pedido",
                                     "fornecedor"            : "Fornecedor",
                                     "material"              : "Material",
                                     "descricao"             : "Descrição",
@@ -2404,7 +2370,7 @@ if "resultado" in st.session_state:
                                         _dl_fluxo["parcela_label"] = "-"
 
                                     _dl_cols = [c for c in [
-                                        "origem", "fornecedor", "material", "descricao",
+                                        "origem", "numero_pedido", "fornecedor", "material", "descricao",
                                         "departamento", "programa_orcamentario",
                                         "mes_emissao", "mes_entrega", "quantidade",
                                         "parcela_label", "prazo_dias", "mes_pagamento",
@@ -2414,6 +2380,7 @@ if "resultado" in st.session_state:
                                         _dl_fluxo[_dl_cols]
                                         .rename(columns={
                                             "origem"                : "Origem",
+                                            "numero_pedido"         : "Nº Pedido",
                                             "fornecedor"            : "Fornecedor",
                                             "material"              : "Material",
                                             "descricao"             : "Descrição",
