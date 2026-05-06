@@ -215,39 +215,35 @@ def _mtime(path: str) -> float:
         return 0.0
 
 
+@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def _cached_ler_materiais(path: str, _mtime: float) -> pd.DataFrame:
-    # SEM CACHE: arquivo de materiais muda frequentemente e mudanças precisam
-    # ser refletidas imediatamente (novos materiais, alterações, etc)
     return ler_materiais(path)
 
 
+@st.cache_data(show_spinner=False)
 def _cached_ler_lead_times(path: str, _mtime: float) -> dict:
-    # SEM CACHE: lead times podem ser ajustados e mudanças precisam
-    # ser refletidas imediatamente nos cálculos de MRP
     return ler_lead_times(path)
 
 
+@st.cache_data(show_spinner=False)
 def _cached_ler_mb51(path: str, _mtime: float) -> pd.DataFrame:
-    # SEM CACHE: estoque é dinâmico, recebimentos e saídas alteram
-    # o histórico constantemente e precisam ser refletidos imediatamente
     return ler_historico_mb51(path)
 
 
+@st.cache_data(show_spinner=False)
 def _cached_ler_politica(path: str, _mtime: float) -> dict:
-    # NÃO USAR CACHE: arquivo de política é pequeno e mudanças precisam
-    # ser refletidas imediatamente quando o usuário modifica o arquivo
     return ler_politica_pagamento(path)
 
 
+@st.cache_data(show_spinner=False)
 def _cached_ler_contratos(path: str, _mtime: float) -> pd.DataFrame:
-    # SEM CACHE: contratos podem ter aditivos e políticas podem mudar,
-    # alterações precisam ser refletidas imediatamente nos cálculos
     return ler_contratos_sap(path)
 
 
+@st.cache_data(show_spinner=False)
 def _cached_transformar_demanda(path: str, _mtime: float) -> pd.DataFrame:
-    # SEM CACHE: demanda é o principal driver do MRP e muda frequentemente
-    # (remessas, alterações de previsão), mudanças precisam ser refletidas imediatamente
+    """Lê e transforma o arquivo de demanda DTM. Cacheado por mtime do arquivo."""
     return transformar_demanda_dtm(path)
 
 
@@ -409,9 +405,6 @@ def _atualizar_rateio_session() -> None:
     Recomputa apenas o passo_12_rateio usando os dados já calculados no
     resultado do MRP. Muito mais rápido que reprocessar o MRP inteiro.
     Se não houver resultado em sessão, limpa tudo para forçar reprocessamento.
-
-    IMPORTANTE: Também marca para reprocessar cálculos financeiros pois
-    o rateio afeta visão orçamentária, caixa e relatórios.
     """
     res = st.session_state.get("resultado")
     if res is not None:
@@ -421,312 +414,12 @@ def _atualizar_rateio_session() -> None:
             _dem_detail  = res.get("demanda_detail_df", pd.DataFrame())
             _novo_rateio = passo_12_rateio(_df_ped, _df_ab, _dem_detail if not _dem_detail.empty else None)
             st.session_state["resultado"]["rateio"] = _novo_rateio
-            # Flag para reprocessar cálculos financeiros na próxima renderização
-            st.session_state["_reprocessar_financeiro"] = True
         except Exception:
             # Fallback seguro: força reprocessamento completo
             st.session_state.pop("resultado", None)
             st.session_state.pop("_auto_processado", None)
     else:
         st.session_state.pop("_auto_processado", None)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS: HISTÓRICO DE DEMANDA PARA RECUPERAR RATEIOS ANTERIORES
-# ─────────────────────────────────────────────────────────────────────────────
-_HISTORICO_DEMANDA_DIR = os.path.join(DIR_DADOS, "demanda_historico")
-
-
-def _guardar_demanda_historico(demanda_df: pd.DataFrame) -> None:
-    """
-    Salva uma revisão da demanda com timestamp.
-    Mantém os últimos 50 arquivos de histórico.
-    """
-    if demanda_df.empty:
-        return
-
-    os.makedirs(_HISTORICO_DEMANDA_DIR, exist_ok=True)
-
-    # Nome: demanda_dtm_rev_YYYYMMDD_HHMMSS.csv
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    arquivo = os.path.join(_HISTORICO_DEMANDA_DIR, f"demanda_dtm_rev_{timestamp}.csv")
-
-    demanda_df.to_csv(arquivo, index=False, sep=";")
-
-    # Limpar arquivos antigos (manter últimos 50)
-    arquivos = sorted([
-        f for f in os.listdir(_HISTORICO_DEMANDA_DIR)
-        if f.startswith("demanda_dtm_rev_")
-    ])
-    if len(arquivos) > 50:
-        for f in arquivos[:-50]:
-            try:
-                os.remove(os.path.join(_HISTORICO_DEMANDA_DIR, f))
-            except:
-                pass
-
-
-def _procurar_rateio_historico(material: str) -> dict | None:
-    """
-    Procura nas demandas históricas a ÚLTIMA que tinha rateio para o material.
-    Retorna dict com {departamento, programa_orcamentario, proporcao, data_revisao}
-    ou None se não encontrar.
-    """
-    if not os.path.exists(_HISTORICO_DEMANDA_DIR):
-        return None
-
-    material_str = str(material).strip()
-
-    # Arquivos ordenados por data DESC (mais recentes primeiro)
-    arquivos = sorted([
-        f for f in os.listdir(_HISTORICO_DEMANDA_DIR)
-        if f.startswith("demanda_dtm_rev_")
-    ], reverse=True)
-
-    for arquivo in arquivos:
-        try:
-            caminho = os.path.join(_HISTORICO_DEMANDA_DIR, arquivo)
-            df = pd.read_csv(caminho, sep=";")
-
-            # Procurar o material
-            if "material" in df.columns and "departamento" in df.columns:
-                linha = df[df["material"].astype(str).str.strip() == material_str]
-                if not linha.empty:
-                    dept = linha["departamento"].iloc[0]
-                    prog = linha.get("programa_orcamentario", [None]).iloc[0] if "programa_orcamentario" in linha.columns else None
-                    prop = linha.get("proporcao", [None]).iloc[0] if "proporcao" in linha.columns else None
-
-                    # Se encontrou com departamento preenchido, retornar
-                    if pd.notna(dept) and str(dept).strip() not in ["", "nan", "NaN"]:
-                        return {
-                            "material": material_str,
-                            "departamento": str(dept).strip(),
-                            "programa_orcamentario": str(prog).strip() if pd.notna(prog) else None,
-                            "proporcao": float(prop) if pd.notna(prop) else None,
-                            "revisao": arquivo.replace("demanda_dtm_rev_", "").replace(".csv", ""),
-                        }
-        except Exception as e:
-            print(f"Erro ao ler {arquivo}: {e}")
-            continue
-
-    return None
-
-
-def _sugestoes_rateio_historico(df_nao_def: pd.DataFrame) -> list[dict]:
-    """
-    Retorna lista de sugestões de rateio histórico para materiais sem rateio.
-    """
-    sugestoes = []
-
-    if df_nao_def.empty or "material" not in df_nao_def.columns:
-        return sugestoes
-
-    mats_sem_rateio = df_nao_def["material"].astype(str).unique()
-
-    for mat in mats_sem_rateio:
-        rateio_hist = _procurar_rateio_historico(mat)
-        if rateio_hist:
-            sugestoes.append(rateio_hist)
-
-    return sugestoes
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS: DEMANDAS DE ANOS ANTERIORES (base histórica por ano)
-# ─────────────────────────────────────────────────────────────────────────────
-_DEMANDA_ANOS_DIR = os.path.join(DIR_DADOS, "demanda_anos_anteriores")
-
-_COL_MAP_DEMANDA = {
-    "CÓDIGO SAP"                  : "material",
-    "CÓDIGO"                      : "material",
-    "COD"                         : "material",
-    "COD. SAP"                    : "material",
-    "DEP."                        : "departamento",
-    "DEP"                         : "departamento",
-    "DEPARTAMENTO"                : "departamento",
-    "DEPTO"                       : "departamento",
-    "AÇÃO / PROJETO"              : "programa_orcamentario",
-    "AÇÃO/PROJETO"                : "programa_orcamentario",
-    "AÇÃO"                        : "programa_orcamentario",
-    "PROJETO"                     : "programa_orcamentario",
-    "QTD"                         : "quantidade",
-    "QTD."                        : "quantidade",
-    "QUANTIDADE"                  : "quantidade",
-    "MÊS"                         : "mes",
-    "MES"                         : "mes",
-    "ANO"                         : "ano",
-    "DESCRIÇÃO (ENVIADA PELO DEP.)": "descricao",
-    "DESCRIÇÃO"                   : "descricao",
-    "UNID"                        : "unidade",
-}
-
-
-def _normalizar_df_demanda(df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza colunas de um arquivo de demanda para o padrão interno."""
-    df = df.copy()
-    df.columns = [_COL_MAP_DEMANDA.get(c.strip().upper(), c.strip().lower()) for c in df.columns]
-    if "material" not in df.columns:
-        return pd.DataFrame()
-    df["material"] = df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
-    if "quantidade" in df.columns:
-        df["quantidade"] = pd.to_numeric(
-            df["quantidade"].astype(str).str.replace(",", ".").str.strip(), errors="coerce"
-        ).fillna(0)
-    else:
-        df["quantidade"] = 1
-    if "departamento" not in df.columns:
-        df["departamento"] = ""
-    if "programa_orcamentario" not in df.columns:
-        df["programa_orcamentario"] = ""
-    return df
-
-
-def _salvar_demanda_ano(ano: int, df: pd.DataFrame) -> None:
-    """Salva ou sobrescreve a demanda de um ano específico."""
-    os.makedirs(_DEMANDA_ANOS_DIR, exist_ok=True)
-    df.to_csv(os.path.join(_DEMANDA_ANOS_DIR, f"demanda_{ano}.csv"), sep=";", index=False)
-
-
-def _carregar_demanda_ano(ano: int) -> pd.DataFrame:
-    """Carrega a demanda de um ano específico. Retorna DataFrame vazio se não existir."""
-    path = os.path.join(_DEMANDA_ANOS_DIR, f"demanda_{ano}.csv")
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    return pd.read_csv(path, sep=";", dtype={"material": str})
-
-
-def _listar_anos_disponiveis() -> list[int]:
-    """Retorna lista de anos com demanda histórica cadastrada."""
-    if not os.path.exists(_DEMANDA_ANOS_DIR):
-        return []
-    anos = []
-    for f in os.listdir(_DEMANDA_ANOS_DIR):
-        if f.startswith("demanda_") and f.endswith(".csv"):
-            try:
-                anos.append(int(f.replace("demanda_", "").replace(".csv", "")))
-            except ValueError:
-                pass
-    return sorted(anos, reverse=True)
-
-
-def _procurar_demandante_historico(material: str) -> dict | None:
-    """
-    Procura nos anos anteriores o departamento/programa que demandou o material.
-    Retorna o resultado do ano mais recente onde o material foi encontrado.
-    """
-    material_str = str(material).strip()
-
-    for ano in _listar_anos_disponiveis():
-        df = _carregar_demanda_ano(ano)
-        if df.empty or "material" not in df.columns:
-            continue
-
-        linha = df[df["material"].astype(str).str.strip() == material_str]
-        if linha.empty:
-            continue
-
-        # Calcular proporções se houver departamento
-        if "departamento" in linha.columns:
-            linha_valida = linha[linha["departamento"].fillna("").str.strip().ne("")]
-            if not linha_valida.empty:
-                _rateio = derivar_rateio_da_demanda(linha_valida)
-                if not _rateio.empty:
-                    return {
-                        "material": material_str,
-                        "ano"     : ano,
-                        "rateio"  : _rateio.to_dict("records"),
-                    }
-
-    return None
-
-
-def _sugestoes_demanda_anos_anteriores(mats_sem_rateio: set) -> dict[str, dict]:
-    """
-    Para cada material sem rateio, procura nos anos anteriores.
-    Retorna dict {material: {ano, rateio}}.
-    """
-    resultado = {}
-    for mat in mats_sem_rateio:
-        encontrado = _procurar_demandante_historico(mat)
-        if encontrado:
-            resultado[mat] = encontrado
-    return resultado
-
-
-def _buscar_rateio_mb51_em_cascata(
-    materiais_mb51: set,
-    demanda_atual: pd.DataFrame,
-    rateio_manual_df: pd.DataFrame,
-) -> dict[str, dict]:
-    """
-    Para cada material do MB51, procura rateio em cascata:
-    1. rateio_manual.csv (já cadastrado)
-    2. demanda_atual (DEP. + AÇÃO/PROJETO)
-    3. anos anteriores
-
-    Retorna dict {material: {source, rateio}} onde source = "manual" | "demanda_atual" | "anos_anteriores" | None
-
-    IMPORTANTE: Normaliza materiais da mesma forma que _normalizar_df_demanda
-    """
-    resultado = {}
-
-    # 1. Já tem rateio manual?
-    if not rateio_manual_df.empty:
-        _mats_manual = set(
-            rateio_manual_df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1).unique()
-        )
-        for mat in materiais_mb51 & _mats_manual:
-            _rat_man = rateio_manual_df[
-                rateio_manual_df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1) == str(mat)
-            ]
-            if not _rat_man.empty:
-                resultado[mat] = {
-                    "source": "manual",
-                    "rateio": [
-                        {
-                            "departamento"        : row["departamento"],
-                            "programa_orcamentario": row.get("programa_orcamentario", ""),
-                            "proporcao"           : row.get("proporcao", 1.0),
-                        }
-                        for _, row in _rat_man.iterrows()
-                    ]
-                }
-
-    # 2. Procurar nas demandas (atual + anos anteriores)
-    _mats_ainda_sem = materiais_mb51 - set(resultado.keys())
-
-    if _mats_ainda_sem and not demanda_atual.empty and "material" in demanda_atual.columns:
-        _dem_filtrado = demanda_atual[
-            demanda_atual["material"].astype(str).str.strip().isin(_mats_ainda_sem) &
-            demanda_atual.get("departamento", pd.Series([""]*len(demanda_atual))).fillna("").str.strip().ne("")
-        ]
-        if not _dem_filtrado.empty:
-            try:
-                _rateio_dem = derivar_rateio_da_demanda(_dem_filtrado)
-                for _, rrow in _rateio_dem.iterrows():
-                    mat = str(rrow["material"]).strip()
-                    if mat not in resultado:
-                        resultado[mat] = {
-                            "source": "demanda_atual",
-                            "rateio": [{
-                                "departamento"        : rrow["departamento"],
-                                "programa_orcamentario": rrow.get("programa_orcamentario"),
-                                "proporcao"           : float(rrow["proporcao"]),
-                            }]
-                        }
-            except Exception:
-                pass
-
-    # 3. Procurar nos anos anteriores
-    _mats_ainda_sem = materiais_mb51 - set(resultado.keys())
-    _anos_sug = _sugestoes_demanda_anos_anteriores(_mats_ainda_sem)
-    for mat, info in _anos_sug.items():
-        resultado[mat] = {
-            "source": f"anos_anteriores ({info['ano']})",
-            "rateio": info["rateio"],
-        }
-
-    return resultado
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1196,10 +889,6 @@ if _disparar:
                     if _raw_path and os.path.exists(_raw_path)
                     else pd.DataFrame()
                 )
-
-            # Guardar revisão de demanda para recuperação de rateios históricos
-            _guardar_demanda_historico(_demanda_detail_raw if not _demanda_detail_raw.empty else demanda)
-
             estoque                  = passo_3_estoque()
             entradas, df_abertos_fut = passo_4_pedidos_abertos()
             abc        = _cached_passo5_abc(demanda, materiais, contratos if not contratos.empty else pd.DataFrame())
@@ -1225,13 +914,6 @@ if _disparar:
                 _cached_ler_politica(politica_path, _mtime(politica_path))
                 if politica_path else {}
             )
-
-            # DEBUG: mostrar o que foi carregado da política
-            print(f"\n  [POLÍTICA] Carregada com {len(politica_pag_carregada)} entrada(s):")
-            for _doc, _dias in list(politica_pag_carregada.items())[:10]:
-                print(f"    {_doc!r:20s} → {_dias}")
-            if len(politica_pag_carregada) > 10:
-                print(f"    ... + {len(politica_pag_carregada)-10} mais")
 
             # Alertas
             alertas_rup, alertas_cont = _calcular_alertas(df_mrp, df_ped, contratos)
@@ -1315,10 +997,7 @@ if _disparar:
                         _tmp3["mes_entrega"] + "-15", format="%Y-%m-%d", errors="coerce"
                     )
                 _tmp3["documento_referencia"] = None
-                # Preservar numero_pedido extraído pelo ler_historico_mb51
-                # (coluna "pedido" do arquivo SAP MB51 → usado para lookup de política)
-                if "numero_pedido" not in _tmp3.columns:
-                    _tmp3["numero_pedido"] = None
+                _tmp3["numero_pedido"]        = None
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
                 _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
                                           "mes_pedido","mes_entrega","data_base_pagamento",
@@ -1351,69 +1030,30 @@ if _disparar:
                     _contrato_ref = _row["documento_referencia"]
                     _pedido_ref   = _row.get("numero_pedido")
 
-                    # Normaliza valor de documento para string limpa ou None
+                    # Normalizar: "nan", "None", "" → None para evitar falsos positivos
                     def _val_doc(v):
                         s = str(v).strip() if v is not None else ""
-                        if not s or s.lower() in ("nan", "none", "<na>", "0", ""):
-                            return None
-                        # Remove sufixo ".0" gerado quando SAP exporta PO como float
-                        if s.endswith(".0") and s[:-2].isdigit():
-                            s = s[:-2]
-                        return s
-
-                    # Busca na política tentando múltiplas formas do mesmo número
-                    def _buscar_politica(chave: str | None) -> list | None:
-                        if not chave:
-                            return None
-                        # 1. Exata
-                        if chave in politica_pag_carregada:
-                            return politica_pag_carregada[chave]
-                        # 2. Como inteiro (remove zeros à esquerda e ".0")
-                        try:
-                            chave_int = str(int(float(chave)))
-                            if chave_int in politica_pag_carregada:
-                                return politica_pag_carregada[chave_int]
-                        except (ValueError, OverflowError):
-                            pass
-                        # 3. Com zeros à esquerda (10 dígitos, padrão SAP)
-                        chave_pad = chave.zfill(10)
-                        if chave_pad in politica_pag_carregada:
-                            return politica_pag_carregada[chave_pad]
-                        return None
+                        return s if s and s.lower() not in ("nan", "none", "<na>") else None
 
                     _contrato_ref = _val_doc(_contrato_ref)
                     _pedido_ref   = _val_doc(_pedido_ref)
 
                     _dias = None
                     _politica_fonte = "fallback [60,90]"
-                    if _contrato_ref:
-                        _match = _buscar_politica(_contrato_ref)
-                        if _match:
-                            _dias = _match
-                            _politica_fonte = f"contrato:{_contrato_ref}"
-                    if _dias is None and _pedido_ref:
-                        _match = _buscar_politica(_pedido_ref)
-                        if _match:
-                            _dias = _match
-                            _politica_fonte = f"pedido:{_pedido_ref}"
+                    if _contrato_ref and _contrato_ref in politica_pag_carregada:
+                        _dias = politica_pag_carregada[_contrato_ref]
+                        _politica_fonte = f"contrato:{_contrato_ref}"
+                    if _dias is None and _pedido_ref and _pedido_ref in politica_pag_carregada:
+                        _dias = politica_pag_carregada[_pedido_ref]
+                        _politica_fonte = f"pedido:{_pedido_ref}"
                     if _dias is None:
                         _dias = [60, 90]
-                        # DEBUG detalhado
-                        _raw_ped = str(_row.get("numero_pedido", "")).strip()
-                        print(f"  [FALLBACK] Mat={_row['material']} | "
-                              f"Contrato_raw={str(_row['documento_referencia'])!r} "
-                              f"Contrato_norm={_contrato_ref!r} | "
-                              f"Pedido_raw={_raw_ped!r} "
-                              f"Pedido_norm={_pedido_ref!r} | "
-                              f"Em política: {list(politica_pag_carregada.keys())}")
                         _log_sem_politica.append({
-                            "origem"        : _row["origem"],
-                            "material"      : _row["material"],
-                            "contrato_raw"  : str(_row["documento_referencia"]),
-                            "contrato_norm" : _contrato_ref or "—",
-                            "pedido_raw"    : str(_row.get("numero_pedido", "")),
-                            "pedido_norm"   : _pedido_ref or "—",
-                            "valor_pedido"  : _row["valor_pedido"],
+                            "origem"      : _row["origem"],
+                            "material"    : _row["material"],
+                            "contrato"    : _contrato_ref or "—",
+                            "pedido"      : _pedido_ref   or "—",
+                            "valor_pedido": _row["valor_pedido"],
                         })
                     _n     = len(_dias)
                     _vbase = round(_row["valor_pedido"] / _n, 2)
@@ -2028,18 +1668,12 @@ if "resultado" in st.session_state:
                 f"usando fallback padrão **60/90 dias**. "
                 f"Verifique os contratos/pedidos abaixo e cadastre-os no arquivo de política."
             )
-            with st.expander("🔍 Ver documentos sem política — valores brutos vs normalizados"):
-                st.caption("Compare 'raw' (como vem do SAP) com 'norm' (como o sistema busca). "
-                           "O campo no arquivo de política deve bater com o valor 'norm'.")
+            with st.expander("🔍 Ver documentos sem política (clique para expandir)"):
                 st.dataframe(
                     _sem_pol_df.rename(columns={
-                        "origem"        : "Origem",
-                        "material"      : "Material",
-                        "contrato_raw"  : "Contrato (SAP)",
-                        "contrato_norm" : "Contrato (norm)",
-                        "pedido_raw"    : "Pedido (SAP)",
-                        "pedido_norm"   : "Pedido (norm)",
-                        "valor_pedido"  : "Valor (R$)",
+                        "origem": "Origem", "material": "Material",
+                        "contrato": "Contrato", "pedido": "Nº Pedido",
+                        "valor_pedido": "Valor (R$)",
                     }),
                     use_container_width=True, hide_index=True,
                 )
@@ -3024,81 +2658,6 @@ if "resultado" in st.session_state:
         if not _abc_df.empty and "valor_unitario" in _abc_df.columns:
             _preco_map = dict(zip(_abc_df["material"].astype(str), _abc_df["valor_unitario"]))
 
-        # ── Seção 0: Busca automática de rateio para materiais do MB51 ────────
-        _mb51_df   = r.get("historico_mb51", pd.DataFrame())
-        _rm_df_mb = _carregar_rateio_manual()
-
-        if not _mb51_df.empty and "material" in _mb51_df.columns:
-            _mats_mb51 = set(_mb51_df["material"].astype(str).str.strip().unique())
-            _sug_mb51 = _buscar_rateio_mb51_em_cascata(_mats_mb51, _dd_df, _rm_df_mb)
-
-            # DEBUG: mostrar status da busca
-            with st.expander("🔧 DEBUG: Status MB51"):
-                st.write(f"**Total de materiais no MB51:** {len(_mats_mb51)}")
-                st.write(f"**Encontrados com rateio:** {len(_sug_mb51)}")
-                st.write(f"**Ainda sem rateio:** {len(_mats_mb51 - set(_sug_mb51.keys()))}")
-                if _mats_mb51 - set(_sug_mb51.keys()):
-                    st.write(f"**Materiais sem rateio:** {sorted(_mats_mb51 - set(_sug_mb51.keys()))[:20]}")
-                if _dd_df.empty:
-                    st.warning("⚠️ Demanda atual (_dd_df) está vazia!")
-                else:
-                    st.write(f"Demanda atual tem {len(_dd_df)} linhas, {_dd_df['material'].nunique()} materiais únicos")
-
-            if _sug_mb51:
-                st.markdown("#### 🔍 Rateio automático encontrado para MB51")
-                st.caption(f"Busca em cascata: rateio_manual → demanda_atual → anos_anteriores")
-
-                _sug_mb51_por_fonte = {}
-                for mat, info in sorted(_sug_mb51.items()):
-                    _fonte = info.get("source", "desconhecido")
-                    if _fonte not in _sug_mb51_por_fonte:
-                        _sug_mb51_por_fonte[_fonte] = []
-                    _sug_mb51_por_fonte[_fonte].append((mat, info))
-
-                for _fonte_nome in sorted(_sug_mb51_por_fonte.keys()):
-                    _items_fonte = _sug_mb51_por_fonte[_fonte_nome]
-                    _emoji_fonte = {"manual": "✅", "demanda_atual": "📊", "anos_anteriores": "📅"}.get(
-                        _fonte_nome.split()[0], "📌"
-                    )
-
-                    with st.expander(f"{_emoji_fonte} {_fonte_nome.upper()} ({len(_items_fonte)} materiais)"):
-                        if st.button(f"✅ Aceitar todos de {_fonte_nome}", key=f"aceitar_mb51_{_fonte_nome}"):
-                            for mat, info in _items_fonte:
-                                _salvar_rateio_manual(mat, [
-                                    {
-                                        "departamento"        : r["departamento"],
-                                        "programa_orcamentario": r.get("programa_orcamentario") or "",
-                                        "proporcao_pct"       : round(r["proporcao"] * 100, 4),
-                                    }
-                                    for r in info["rateio"]
-                                ])
-                            st.session_state.pop("resultado", None)
-                            st.session_state.pop("_auto_processado", None)
-                            st.success(f"✅ {len(_items_fonte)} material(is) salvo! Reprocessando...")
-                            st.rerun()
-
-                        for mat, info in sorted(_items_fonte):
-                            _desc_mb = _desc_map.get(mat, "")
-                            with st.expander(f"**{mat}** {_desc_mb}"):
-                                _df_rat = pd.DataFrame(info["rateio"])
-                                _df_rat["proporcao"] = (_df_rat["proporcao"] * 100).round(1).astype(str) + "%"
-                                st.dataframe(_df_rat[["departamento", "programa_orcamentario", "proporcao"]], hide_index=True, use_container_width=True)
-                                if st.button(f"✅ Aceitar para {mat}", key=f"aceitar_mb51_{mat}"):
-                                    _salvar_rateio_manual(mat, [
-                                        {
-                                            "departamento"        : r["departamento"],
-                                            "programa_orcamentario": r.get("programa_orcamentario") or "",
-                                            "proporcao_pct"       : round(r["proporcao"] * 100, 4),
-                                        }
-                                        for r in info["rateio"]
-                                    ])
-                                    st.session_state.pop("resultado", None)
-                                    st.session_state.pop("_auto_processado", None)
-                                    st.success("✅ Salvo! Reprocessando...")
-                                    st.rerun()
-
-                st.divider()
-
         # ── Seção 1: Log de materiais sem rateio ─────────────────────────────
         st.markdown("#### 📋 Materiais sem rateio definido")
 
@@ -3106,33 +2665,14 @@ if "resultado" in st.session_state:
             st.info("Nenhum dado de rateio disponível. Processe o MRP primeiro.")
         else:
             _df_nao_def = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy()
-
-            # ── Filtro por período de entrega (apenas de hoje em diante) ─────────
-            _mes_atual = str(pd.Timestamp.now().to_period("M"))  # ex: "2026-05"
-            if "periodo_entrega" in _df_nao_def.columns:
-                _df_nao_def_futuro = _df_nao_def[
-                    (_df_nao_def["periodo_entrega"].astype(str) >= _mes_atual) |
-                    (_df_nao_def["periodo_entrega"].isna())  # manter NaT por segurança
-                ].copy()
-                _n_com_data_futura = len(_df_nao_def_futuro["material"].unique())
-                _n_total_sem_rateio = len(_df_nao_def["material"].unique())
-                _n_vencidos = _n_total_sem_rateio - _n_com_data_futura
-
-                st.info(f"📅 Filtrando por período de entrega: **{_mes_atual}** em diante  \n"
-                       f"({_n_com_data_futura} de {_n_total_sem_rateio} materiais ainda pendentes de atribuição)")
-
-                _df_nao_def = _df_nao_def_futuro
-            else:
-                st.warning("⚠️ Coluna 'periodo_entrega' não encontrada. Reprocesse o MRP para ativar o filtro por período.")
-
             _mats_nao_def = sorted(_df_nao_def["material"].astype(str).unique().tolist()) \
                 if not _df_nao_def.empty else []
 
             n_pend = len(_mats_nao_def)
             if n_pend > 0:
-                st.warning(f"⚠️ **{n_pend} material(is) pendente(s) de rateio manual** (período atual e futuros)")
+                st.warning(f"⚠️ **{n_pend} material(is) pendente(s) de rateio manual**")
             else:
-                st.success("✅ Todos os materiais com data futura têm rateio definido.")
+                st.success("✅ Todos os materiais têm rateio definido.")
 
             if not _df_nao_def.empty:
                 def _motivo(mat: str) -> str:
@@ -3147,10 +2687,7 @@ if "resultado" in st.session_state:
 
                 _sumario = (
                     _df_nao_def.groupby("material", as_index=False)
-                    .agg(
-                        qtd_total_rateada=("qtd_rateada", "sum"),
-                        periodo_entrega=("periodo_entrega", "min"),  # mostrar período de entrega
-                    )
+                    .agg(qtd_total_rateada=("qtd_rateada", "sum"))
                 )
                 _sumario["material"]    = _sumario["material"].astype(str)
                 _sumario["descricao"]   = _sumario["material"].map(_desc_map).fillna("-")
@@ -3158,269 +2695,10 @@ if "resultado" in st.session_state:
                 _sumario["valor_total"] = (_sumario["qtd_total_rateada"] * _sumario["valor_unit"]).round(2)
                 _sumario["motivo"]      = _sumario["material"].apply(_motivo)
                 st.dataframe(
-                    _sumario[["material", "periodo_entrega", "descricao", "qtd_total_rateada", "valor_total", "motivo"]],
+                    _sumario[["material", "descricao", "qtd_total_rateada", "valor_total", "motivo"]],
                     use_container_width=True,
                     hide_index=True,
                 )
-
-        # ── Seção 1.5: Sugestões de rateio ───────────────────────────────────
-        st.markdown("#### 💡 Sugestões de Rateio")
-
-        _df_nao_def_para_sug = df_rateio[df_rateio["departamento"] == "NAO_DEFINIDO"].copy() if not df_rateio.empty else pd.DataFrame()
-        _mats_sem_rateio = set(_df_nao_def_para_sug["material"].astype(str).unique()) if not _df_nao_def_para_sug.empty else set()
-
-        # ── Fonte 1: demanda atual carregada (DEP. + AÇÃO/PROJETO) ────────────
-        _sugestoes_demanda: dict[str, list[dict]] = {}
-        if _mats_sem_rateio and not _dd_df.empty and "departamento" in _dd_df.columns:
-            _dd_filtrado = _dd_df[
-                _dd_df["material"].astype(str).str.strip().isin(_mats_sem_rateio) &
-                _dd_df["departamento"].fillna("").str.strip().ne("") &
-                _dd_df["departamento"].fillna("").str.strip().ne("NAO_DEFINIDO")
-            ]
-            if not _dd_filtrado.empty:
-                _rateio_dem = derivar_rateio_da_demanda(_dd_filtrado)
-                for _, rrow in _rateio_dem.iterrows():
-                    mat = str(rrow["material"]).strip()
-                    if mat not in _sugestoes_demanda:
-                        _sugestoes_demanda[mat] = []
-                    _sugestoes_demanda[mat].append({
-                        "departamento"        : rrow["departamento"],
-                        "programa_orcamentario": rrow.get("programa_orcamentario"),
-                        "proporcao"           : float(rrow["proporcao"]),
-                    })
-
-        # ── Fonte 2: upload de arquivo de demanda externo ─────────────────────
-        with st.expander("📂 Importar arquivo de demanda para sugestões de rateio"):
-            st.caption("Útil para usar uma demanda diferente da atual ou quando ainda não processou o MRP")
-            _f_dem_sug = st.file_uploader(
-                "Arquivo de demanda (CSV ou Excel)",
-                type=["csv", "xlsx", "xls", "txt"],
-                key="up_dem_rateio_sug",
-            )
-            if _f_dem_sug is not None:
-                try:
-                    if _f_dem_sug.name.endswith((".xlsx", ".xls")):
-                        _df_dem_imp = pd.read_excel(_f_dem_sug)
-                    else:
-                        _raw = _f_dem_sug.read()
-                        _sep = ";" if b";" in _raw[:500] else "\t" if b"\t" in _raw[:500] else ","
-                        _df_dem_imp = pd.read_csv(io.BytesIO(_raw), sep=_sep, dtype=str)
-
-                    # Normalizar colunas para o padrão transformar_demanda_dtm
-                    _col_map = {
-                        "CÓDIGO SAP": "material", "CÓDIGO": "material", "COD": "material",
-                        "DEP.": "departamento", "DEP": "departamento", "DEPARTAMENTO": "departamento",
-                        "AÇÃO / PROJETO": "programa_orcamentario", "AÇÃO/PROJETO": "programa_orcamentario",
-                        "AÇÃO": "programa_orcamentario", "PROJETO": "programa_orcamentario",
-                        "QTD": "quantidade", "QUANTIDADE": "quantidade",
-                    }
-                    _df_dem_imp.columns = [_col_map.get(c.strip().upper(), c) for c in _df_dem_imp.columns]
-
-                    if "material" in _df_dem_imp.columns and "departamento" in _df_dem_imp.columns:
-                        _df_dem_imp["material"] = _df_dem_imp["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1)
-                        if "quantidade" not in _df_dem_imp.columns:
-                            _df_dem_imp["quantidade"] = 1
-                        else:
-                            _df_dem_imp["quantidade"] = pd.to_numeric(_df_dem_imp["quantidade"].astype(str).str.replace(",", "."), errors="coerce").fillna(1)
-
-                        if "programa_orcamentario" not in _df_dem_imp.columns:
-                            _df_dem_imp["programa_orcamentario"] = ""
-
-                        # Filtrar apenas materiais sem rateio atual
-                        _df_dem_filtrado_imp = _df_dem_imp[
-                            _df_dem_imp["material"].isin(_mats_sem_rateio) &
-                            _df_dem_imp["departamento"].fillna("").str.strip().ne("")
-                        ]
-                        if not _df_dem_filtrado_imp.empty:
-                            _rateio_imp = derivar_rateio_da_demanda(_df_dem_filtrado_imp)
-                            for _, rrow in _rateio_imp.iterrows():
-                                mat = str(rrow["material"]).strip()
-                                if mat not in _sugestoes_demanda:
-                                    _sugestoes_demanda[mat] = []
-                                    _sugestoes_demanda[mat].append({
-                                        "departamento"        : rrow["departamento"],
-                                        "programa_orcamentario": rrow.get("programa_orcamentario"),
-                                        "proporcao"           : float(rrow["proporcao"]),
-                                    })
-                            st.success(f"✅ {len(_rateio_imp['material'].unique())} material(is) com rateio extraído do arquivo")
-                        else:
-                            st.warning("Nenhum material pendente encontrado no arquivo importado.")
-                    else:
-                        st.error(f"Colunas obrigatórias não encontradas. Encontradas: {list(_df_dem_imp.columns)}")
-                except Exception as _e_imp:
-                    st.error(f"Erro ao importar arquivo: {_e_imp}")
-
-        # ── Exibir sugestões da demanda ────────────────────────────────────────
-        if _sugestoes_demanda:
-            st.info(f"✨ **{len(_sugestoes_demanda)} material(is)** com rateio identificado na demanda")
-
-            # Botão para aceitar TODOS de uma vez
-            if st.button("✅ Aceitar todos os rateios da demanda", type="primary", key="aceitar_todos_dem"):
-                _n_aceitos = 0
-                for _mat_sug, _linhas_sug in _sugestoes_demanda.items():
-                    _salvar_rateio_manual(_mat_sug, [
-                        {
-                            "departamento"        : l["departamento"],
-                            "programa_orcamentario": l.get("programa_orcamentario") or "",
-                            "proporcao_pct"       : round(l["proporcao"] * 100, 4),
-                        }
-                        for l in _linhas_sug
-                    ])
-                    _n_aceitos += 1
-                # Força reprocessamento completo (incluindo cálculos financeiros)
-                st.session_state.pop("resultado", None)
-                st.session_state.pop("_auto_processado", None)
-                st.success(f"✅ {_n_aceitos} material(is) salvo! Reprocessando MRP...")
-                st.rerun()
-
-            st.caption("Ou aceite individualmente:")
-
-            for _mat_sug, _linhas_sug in sorted(_sugestoes_demanda.items()):
-                _desc_sug = _desc_map.get(_mat_sug, "")
-                with st.expander(f"**{_mat_sug}** {_desc_sug}"):
-                    _df_sug_show = pd.DataFrame(_linhas_sug)
-                    _df_sug_show["proporcao"] = (_df_sug_show["proporcao"] * 100).round(1).astype(str) + "%"
-                    st.dataframe(_df_sug_show[["departamento", "programa_orcamentario", "proporcao"]], hide_index=True, use_container_width=True)
-
-                    if st.button(f"✅ Aceitar rateio para {_mat_sug}", key=f"sug_dem_aceitar_{_mat_sug}"):
-                        _salvar_rateio_manual(_mat_sug, [
-                            {
-                                "departamento"        : l["departamento"],
-                                "programa_orcamentario": l.get("programa_orcamentario") or "",
-                                "proporcao_pct"       : round(l["proporcao"] * 100, 4),
-                            }
-                            for l in _linhas_sug
-                        ])
-                        # Força reprocessamento completo
-                        st.session_state.pop("resultado", None)
-                        st.session_state.pop("_auto_processado", None)
-                        st.success(f"✅ Salvo! Reprocessando...")
-                        st.rerun()
-
-        # ── Fonte 3: anos anteriores + revisões semanais ─────────────────────
-        _mats_ainda_sem = _mats_sem_rateio - set(_sugestoes_demanda.keys())
-        if _mats_ainda_sem:
-            st.markdown("**🗂️ De demandas de anos anteriores**")
-
-            _anos_disponiveis = _listar_anos_disponiveis()
-            if not _anos_disponiveis:
-                st.info("Nenhuma demanda de anos anteriores importada ainda. Importe abaixo ↓")
-            else:
-                st.caption(f"Anos disponíveis: {', '.join(str(a) for a in _anos_disponiveis)}")
-                _sug_anos = _sugestoes_demanda_anos_anteriores(_mats_ainda_sem)
-
-                if _sug_anos:
-                    if st.button("✅ Aceitar todos dos anos anteriores", key="aceitar_todos_anos"):
-                        for _mat_a, _info_a in _sug_anos.items():
-                            _salvar_rateio_manual(_mat_a, [
-                                {
-                                    "departamento"        : row["departamento"],
-                                    "programa_orcamentario": row.get("programa_orcamentario") or "",
-                                    "proporcao_pct"       : round(row["proporcao"] * 100, 4),
-                                }
-                                for row in _info_a["rateio"]
-                            ])
-                        # Força reprocessamento completo (incluindo cálculos financeiros)
-                        st.session_state.pop("resultado", None)
-                        st.session_state.pop("_auto_processado", None)
-                        st.success(f"✅ {len(_sug_anos)} material(is) salvo! Reprocessando MRP...")
-                        st.rerun()
-
-                    for _mat_a, _info_a in sorted(_sug_anos.items()):
-                        _desc_a = _desc_map.get(_mat_a, "")
-                        with st.expander(f"**{_mat_a}** {_desc_a} — encontrado em {_info_a['ano']}"):
-                            _df_rat_a = pd.DataFrame(_info_a["rateio"])
-                            _df_rat_a["proporcao"] = (_df_rat_a["proporcao"] * 100).round(1).astype(str) + "%"
-                            st.dataframe(_df_rat_a[["departamento", "programa_orcamentario", "proporcao"]], hide_index=True, use_container_width=True)
-                            if st.button(f"✅ Aceitar para {_mat_a}", key=f"sug_ano_{_mat_a}"):
-                                _salvar_rateio_manual(_mat_a, [
-                                    {
-                                        "departamento"        : row["departamento"],
-                                        "programa_orcamentario": row.get("programa_orcamentario") or "",
-                                        "proporcao_pct"       : round(row["proporcao"] * 100, 4),
-                                    }
-                                    for row in _info_a["rateio"]
-                                ])
-                                # Força reprocessamento completo
-                                st.session_state.pop("resultado", None)
-                                st.session_state.pop("_auto_processado", None)
-                                st.success("✅ Salvo! Reprocessando...")
-                                st.rerun()
-                else:
-                    st.caption("Nenhum dos materiais pendentes encontrado nos anos anteriores importados.")
-
-            # ── Upload de demanda de ano anterior ─────────────────────────────
-            st.markdown("**📥 Importar demanda de ano anterior**")
-            _anos_choices = list(range(date.today().year - 1, date.today().year - 6, -1))
-            _col_ano, _col_up = st.columns([1, 3])
-            with _col_ano:
-                _ano_sel = st.selectbox("Ano", _anos_choices, key="sel_ano_dem_hist")
-            with _col_up:
-                _f_dem_ano = st.file_uploader(
-                    f"Arquivo de demanda {_ano_sel} (CSV, Excel ou TXT)",
-                    type=["csv", "xlsx", "xls", "txt"],
-                    key=f"up_dem_ano_{_ano_sel}",
-                )
-            if _f_dem_ano is not None:
-                try:
-                    if _f_dem_ano.name.endswith((".xlsx", ".xls")):
-                        _df_ano_raw = pd.read_excel(_f_dem_ano)
-                    else:
-                        _raw_b = _f_dem_ano.read()
-                        _sep_a = ";" if b";" in _raw_b[:500] else "\t" if b"\t" in _raw_b[:500] else ","
-                        _df_ano_raw = pd.read_csv(io.BytesIO(_raw_b), sep=_sep_a, dtype=str)
-
-                    _df_ano_norm = _normalizar_df_demanda(_df_ano_raw)
-                    if _df_ano_norm.empty:
-                        st.error("Colunas obrigatórias não encontradas. Verifique o arquivo.")
-                    else:
-                        _df_ano_norm["ano"] = _ano_sel
-                        _salvar_demanda_ano(_ano_sel, _df_ano_norm)
-                        st.success(f"✅ Demanda {_ano_sel} importada: {len(_df_ano_norm)} linhas, {_df_ano_norm['material'].nunique()} materiais")
-                        st.rerun()
-                except Exception as _e_ano:
-                    st.error(f"Erro ao importar: {_e_ano}")
-
-            # ── Mostrar anos já importados ─────────────────────────────────────
-            if _anos_disponiveis:
-                with st.expander("📋 Anos já importados"):
-                    for _ano_imp in _anos_disponiveis:
-                        _df_ano_imp = _carregar_demanda_ano(_ano_imp)
-                        _col_a, _col_b = st.columns([3, 1])
-                        _col_a.write(f"**{_ano_imp}** — {len(_df_ano_imp)} linhas / {_df_ano_imp['material'].nunique() if not _df_ano_imp.empty else 0} materiais")
-                        if _col_b.button("🗑️ Remover", key=f"rm_ano_{_ano_imp}"):
-                            _p = os.path.join(_DEMANDA_ANOS_DIR, f"demanda_{_ano_imp}.csv")
-                            if os.path.exists(_p):
-                                os.remove(_p)
-                            st.rerun()
-
-        # ── Fonte 4: revisões semanais (fallback final) ───────────────────────
-        _mats_sem_final = _mats_ainda_sem - set((_sug_anos if "_sug_anos" in dir() else {}).keys())
-        if _mats_sem_final:
-            _sugestoes_rev = _sugestoes_rateio_historico(
-                _df_nao_def_para_sug[_df_nao_def_para_sug["material"].astype(str).isin(_mats_sem_final)]
-            )
-            if _sugestoes_rev:
-                st.markdown("**🕐 De revisões semanais anteriores**")
-                for i, sug in enumerate(_sugestoes_rev):
-                    _desc_r = _desc_map.get(sug["material"], "")
-                    with st.expander(f"**{sug['material']}** {_desc_r} — revisão {sug['revisao']}"):
-                        col1, col2, col3 = st.columns([2, 2, 1])
-                        col1.write(f"**Departamento:** {sug['departamento']}")
-                        col2.write(f"**Programa:** {sug['programa_orcamentario'] or '—'}")
-                        col3.write(f"**Proporção:** {(sug['proporcao']*100):.1f}%" if sug['proporcao'] else "100%")
-                        if st.button(f"✅ Aceitar", key=f"sug_rev_{i}"):
-                            _salvar_rateio_manual(sug["material"], [{
-                                "departamento"        : sug["departamento"],
-                                "programa_orcamentario": sug["programa_orcamentario"] or "",
-                                "proporcao_pct"       : (sug["proporcao"] * 100) if sug["proporcao"] else 100.0,
-                            }])
-                            _atualizar_rateio_session()
-                            st.success("✅ Rateio aceito!")
-                            st.rerun()
-
-        if not _sugestoes_demanda and not _mats_sem_rateio:
-            st.success("✅ Todos os materiais têm rateio definido.")
 
         st.divider()
 
