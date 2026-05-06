@@ -1462,20 +1462,6 @@ if _disparar:
                     ["material", "departamento", "programa_orcamentario", "proporcao"]
                 ]
 
-            # Complementar com rateio_manual.csv: cobre materiais do MB51 (histórico)
-            # que não aparecem nos pedidos futuros e portanto não passam pelo passo_12_rateio
-            _rm_fin = _carregar_rateio_manual()
-            if not _rm_fin.empty and "departamento" in _rm_fin.columns:
-                _mats_ja_no_base = set(_base_rateio["material"].astype(str)) if not _base_rateio.empty else set()
-                _rm_fin_filt = _rm_fin[
-                    ~_rm_fin["material"].astype(str).isin(_mats_ja_no_base)
-                ].copy()
-                if not _rm_fin_filt.empty:
-                    _rm_fin_filt = _rm_fin_filt[
-                        ["material", "departamento", "programa_orcamentario", "proporcao"]
-                    ].copy()
-                    _base_rateio = pd.concat([_base_rateio, _rm_fin_filt], ignore_index=True)
-
             def _aplicar_rateio_fin(df: pd.DataFrame, col_valor: str) -> pd.DataFrame:
                 if df.empty:
                     return pd.DataFrame()
