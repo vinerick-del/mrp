@@ -665,14 +665,20 @@ def _buscar_rateio_mb51_em_cascata(
     3. anos anteriores
 
     Retorna dict {material: {source, rateio}} onde source = "manual" | "demanda_atual" | "anos_anteriores" | None
+
+    IMPORTANTE: Normaliza materiais da mesma forma que _normalizar_df_demanda
     """
     resultado = {}
 
     # 1. Já tem rateio manual?
     if not rateio_manual_df.empty:
-        _mats_manual = set(rateio_manual_df["material"].astype(str).str.strip())
+        _mats_manual = set(
+            rateio_manual_df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1).unique()
+        )
         for mat in materiais_mb51 & _mats_manual:
-            _rat_man = rateio_manual_df[rateio_manual_df["material"].astype(str).str.strip() == str(mat)]
+            _rat_man = rateio_manual_df[
+                rateio_manual_df["material"].astype(str).str.strip().str.lstrip("0").str.zfill(1) == str(mat)
+            ]
             if not _rat_man.empty:
                 resultado[mat] = {
                     "source": "manual",
@@ -3039,6 +3045,18 @@ if "resultado" in st.session_state:
         if not _mb51_df.empty and "material" in _mb51_df.columns:
             _mats_mb51 = set(_mb51_df["material"].astype(str).str.strip().unique())
             _sug_mb51 = _buscar_rateio_mb51_em_cascata(_mats_mb51, _dd_df, _rm_df_mb)
+
+            # DEBUG: mostrar status da busca
+            with st.expander("🔧 DEBUG: Status MB51"):
+                st.write(f"**Total de materiais no MB51:** {len(_mats_mb51)}")
+                st.write(f"**Encontrados com rateio:** {len(_sug_mb51)}")
+                st.write(f"**Ainda sem rateio:** {len(_mats_mb51 - set(_sug_mb51.keys()))}")
+                if _mats_mb51 - set(_sug_mb51.keys()):
+                    st.write(f"**Materiais sem rateio:** {sorted(_mats_mb51 - set(_sug_mb51.keys()))[:20]}")
+                if _dd_df.empty:
+                    st.warning("⚠️ Demanda atual (_dd_df) está vazia!")
+                else:
+                    st.write(f"Demanda atual tem {len(_dd_df)} linhas, {_dd_df['material'].nunique()} materiais únicos")
 
             if _sug_mb51:
                 st.markdown("#### 🔍 Rateio automático encontrado para MB51")
