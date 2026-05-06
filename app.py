@@ -409,6 +409,9 @@ def _atualizar_rateio_session() -> None:
     Recomputa apenas o passo_12_rateio usando os dados já calculados no
     resultado do MRP. Muito mais rápido que reprocessar o MRP inteiro.
     Se não houver resultado em sessão, limpa tudo para forçar reprocessamento.
+
+    IMPORTANTE: Também marca para reprocessar cálculos financeiros pois
+    o rateio afeta visão orçamentária, caixa e relatórios.
     """
     res = st.session_state.get("resultado")
     if res is not None:
@@ -418,6 +421,8 @@ def _atualizar_rateio_session() -> None:
             _dem_detail  = res.get("demanda_detail_df", pd.DataFrame())
             _novo_rateio = passo_12_rateio(_df_ped, _df_ab, _dem_detail if not _dem_detail.empty else None)
             st.session_state["resultado"]["rateio"] = _novo_rateio
+            # Flag para reprocessar cálculos financeiros na próxima renderização
+            st.session_state["_reprocessar_financeiro"] = True
         except Exception:
             # Fallback seguro: força reprocessamento completo
             st.session_state.pop("resultado", None)
@@ -3111,8 +3116,10 @@ if "resultado" in st.session_state:
                         for l in _linhas_sug
                     ])
                     _n_aceitos += 1
-                _atualizar_rateio_session()
-                st.success(f"✅ {_n_aceitos} material(is) com rateio salvo!")
+                # Força reprocessamento completo (incluindo cálculos financeiros)
+                st.session_state.pop("resultado", None)
+                st.session_state.pop("_auto_processado", None)
+                st.success(f"✅ {_n_aceitos} material(is) salvo! Reprocessando MRP...")
                 st.rerun()
 
             st.caption("Ou aceite individualmente:")
@@ -3133,8 +3140,10 @@ if "resultado" in st.session_state:
                             }
                             for l in _linhas_sug
                         ])
-                        _atualizar_rateio_session()
-                        st.success(f"✅ Salvo!")
+                        # Força reprocessamento completo
+                        st.session_state.pop("resultado", None)
+                        st.session_state.pop("_auto_processado", None)
+                        st.success(f"✅ Salvo! Reprocessando...")
                         st.rerun()
 
         # ── Fonte 3: anos anteriores + revisões semanais ─────────────────────
@@ -3160,8 +3169,10 @@ if "resultado" in st.session_state:
                                 }
                                 for row in _info_a["rateio"]
                             ])
-                        _atualizar_rateio_session()
-                        st.success(f"✅ {len(_sug_anos)} material(is) aceitos!")
+                        # Força reprocessamento completo (incluindo cálculos financeiros)
+                        st.session_state.pop("resultado", None)
+                        st.session_state.pop("_auto_processado", None)
+                        st.success(f"✅ {len(_sug_anos)} material(is) salvo! Reprocessando MRP...")
                         st.rerun()
 
                     for _mat_a, _info_a in sorted(_sug_anos.items()):
@@ -3179,8 +3190,10 @@ if "resultado" in st.session_state:
                                     }
                                     for row in _info_a["rateio"]
                                 ])
-                                _atualizar_rateio_session()
-                                st.success("✅ Salvo!")
+                                # Força reprocessamento completo
+                                st.session_state.pop("resultado", None)
+                                st.session_state.pop("_auto_processado", None)
+                                st.success("✅ Salvo! Reprocessando...")
                                 st.rerun()
                 else:
                     st.caption("Nenhum dos materiais pendentes encontrado nos anos anteriores importados.")
