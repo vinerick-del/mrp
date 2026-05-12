@@ -38,6 +38,8 @@ from mrp import (
     derivar_rateio_da_demanda,
     transformar_demanda_dtm,
     ler_fornecedor_por_po,
+    ler_pcm,
+    resumo_pcm,
     ARQUIVO_DEMANDA_RAW,
     DIR_DADOS,
     DIR_SAIDA,
@@ -1232,7 +1234,7 @@ if "resultado" in st.session_state:
     st.divider()
 
     # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend, tab_dfp, tab_agenda = st.tabs([
+    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend, tab_dfp, tab_agenda, tab_pcm = st.tabs([
         "📊 MRP Projetado",
         "📅 Projeção de Estoque",
         "🛒 Pedidos a Gerar",
@@ -1243,6 +1245,7 @@ if "resultado" in st.session_state:
         "⚠️ Rateio Pendente",
         "🏦 Rateio DFP",
         "📋 Agenda do Comprador",
+        "🎯 PCM — Materiais Críticos",
     ])
 
     with tab_mrp:
@@ -3596,6 +3599,204 @@ if "resultado" in st.session_state:
                 )
             else:
                 st.info("ℹ️ Nenhum registro ainda.")
+
+
+    # ── Aba PCM: Análise de Materiais Críticos ────────────────────────────────
+    with tab_pcm:
+        st.subheader("🎯 PCM — Planejamento de Materiais Críticos")
+        st.caption(
+            "Análise de itens críticos com duas ações: G1 (emitir OC) e G2 (iniciar contratação)"
+        )
+
+        # Upload PCM
+        _f_pcm = st.file_uploader(
+            "📂 Carregar arquivo PCM_*.xlsx",
+            type=["xlsx"],
+            key="up_pcm",
+            help="Excel com sheet 'MRP' — arquivo PCM de materiais críticos"
+        )
+
+        if _f_pcm is not None:
+            try:
+                _df_pcm = ler_pcm(_f_pcm)
+
+                if _df_pcm.empty:
+                    st.error("❌ Arquivo não contém dados ou sheet 'MRP' não encontrado.")
+                else:
+                    _res_pcm = resumo_pcm(_df_pcm)
+
+                    # ── Métricas Resumo ────────────────────────────────────────
+                    st.markdown("### 📊 Resumo Executivo")
+
+                    _col1, _col2, _col3, _col4 = st.columns(4)
+                    _col1.metric("📦 Total de Itens", _res_pcm.get("total_itens", 0))
+                    _col2.metric("🔴 Críticos", _res_pcm.get("total_criticos", 0))
+                    _col3.metric("G1 (em ação)", _res_pcm.get("g1_total", 0))
+                    _col4.metric("G2 (em ação)", _res_pcm.get("g2_total", 0))
+
+                    # ── Alertas ────────────────────────────────────────────────
+                    st.markdown("### ⚠️ Alertas")
+
+                    if _res_pcm["g1_total"] > 0:
+                        _g1_pct = _res_pcm.get("g1_percentual_critico", 0)
+                        st.success(
+                            f"✅ **G1 — TEM CONTRATO MAS SEM PEDIDO**  \n"
+                            f"{_res_pcm['g1_total']} itens | {_res_pcm['g1_criticos']} críticos ({_g1_pct}%)  \n"
+                            f"**Ação:** Emitir OC (Responsável: PLANEJADOR)"
+                        )
+
+                    if _res_pcm["g2_total"] > 0:
+                        _g2_pct = _res_pcm.get("g2_percentual_critico", 0)
+                        st.warning(
+                            f"🔴 **G2 — SEM CONTRATO E SEM AÇÃO**  \n"
+                            f"{_res_pcm['g2_total']} itens | {_res_pcm['g2_criticos']} críticos ({_g2_pct}%)  \n"
+                            f"**Ação:** Designar comprador e iniciar contratação (Responsável: COMPRADOR)"
+                        )
+
+                    if _res_pcm["g2_criticos"] > 50:
+                        st.error(
+                            f"🚨 **EMERGÊNCIA:** {_res_pcm['g2_criticos']} itens críticos sem contrato!  \n"
+                            f"Iniciar contratação HOJE."
+                        )
+
+                    st.divider()
+
+                    # ── G1: TEM CONTRATO MAS SEM PEDIDO ──────────────────────
+                    st.markdown("### 🟢 G1 — TEM CONTRATO MAS SEM PEDIDO")
+                    st.caption("Emitir OC · Responsável: PLANEJADOR")
+
+                    _df_g1 = _df_pcm[_df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO"].copy()
+
+                    if not _df_g1.empty:
+                        # Filtros
+                        _col_f1, _col_f2 = st.columns(2)
+                        with _col_f1:
+                            _planej_uniq = sorted(_df_g1["planejador"].unique().tolist())
+                            _sel_planej = st.multiselect(
+                                "Filtrar por Planejador",
+                                _planej_uniq,
+                                key="g1_planej_filter"
+                            )
+                        with _col_f2:
+                            _tipo_acordo_uniq = sorted(_df_g1["tipo_acordo"].unique().tolist())
+                            _sel_tipo = st.multiselect(
+                                "Filtrar por Tipo de Acordo",
+                                _tipo_acordo_uniq,
+                                key="g1_tipo_filter"
+                            )
+
+                        # Aplicar filtros
+                        _df_g1_fil = _df_g1.copy()
+                        if _sel_planej:
+                            _df_g1_fil = _df_g1_fil[_df_g1_fil["planejador"].isin(_sel_planej)]
+                        if _sel_tipo:
+                            _df_g1_fil = _df_g1_fil[_df_g1_fil["tipo_acordo"].isin(_sel_tipo)]
+
+                        # Tabela
+                        _cols_g1 = [
+                            "codigo", "descricao", "planejador", "sugestao_pedidos",
+                            "saldo_contrato", "tipo_acordo", "nivel_estoque"
+                        ]
+                        _cols_g1 = [c for c in _cols_g1 if c in _df_g1_fil.columns]
+
+                        st.dataframe(
+                            _df_g1_fil[_cols_g1].sort_values("sugestao_pedidos", ascending=False),
+                            use_container_width=True,
+                            height=400,
+                            hide_index=True
+                        )
+
+                        # Download G1 CSV
+                        _csv_g1 = _df_g1_fil[_cols_g1].to_csv(index=False)
+                        st.download_button(
+                            label="⬇ Exportar G1 (CSV)",
+                            data=_csv_g1,
+                            file_name="G1_TEM_CONTRATO_SEM_PEDIDO.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    else:
+                        st.success("✅ Nenhum item em G1 no momento.")
+
+                    st.divider()
+
+                    # ── G2: SEM CONTRATO E SEM AÇÃO ──────────────────────────
+                    st.markdown("### 🔴 G2 — SEM CONTRATO E SEM AÇÃO")
+                    st.caption("Designar comprador e iniciar contratação · Responsável: COMPRADOR")
+
+                    _df_g2 = _df_pcm[_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO"].copy()
+
+                    if not _df_g2.empty:
+                        # Filtros
+                        _col_f3, _col_f4 = st.columns(2)
+                        with _col_f3:
+                            _nivel_uniq = sorted(_df_g2["nivel_estoque"].unique().tolist())
+                            _sel_nivel = st.multiselect(
+                                "Filtrar por Nível",
+                                _nivel_uniq,
+                                key="g2_nivel_filter"
+                            )
+                        with _col_f4:
+                            _demanda_faixa = st.slider(
+                                "Filtrar por Demanda Anual (mín.)",
+                                0,
+                                int(_df_g2["demanda_anual"].max() or 1000),
+                                key="g2_demanda_filter"
+                            )
+
+                        # Aplicar filtros
+                        _df_g2_fil = _df_g2.copy()
+                        if _sel_nivel:
+                            _df_g2_fil = _df_g2_fil[_df_g2_fil["nivel_estoque"].isin(_sel_nivel)]
+                        _df_g2_fil = _df_g2_fil[_df_g2_fil["demanda_anual"] >= _demanda_faixa]
+
+                        # Tabela
+                        _cols_g2 = [
+                            "codigo", "descricao", "sugestao_pedidos",
+                            "demanda_anual", "comprador", "status_contratacao", "nivel_estoque"
+                        ]
+                        _cols_g2 = [c for c in _cols_g2 if c in _df_g2_fil.columns]
+
+                        st.dataframe(
+                            _df_g2_fil[_cols_g2].sort_values("sugestao_pedidos", ascending=False),
+                            use_container_width=True,
+                            height=400,
+                            hide_index=True
+                        )
+
+                        # Download G2 CSV
+                        _csv_g2 = _df_g2_fil[_cols_g2].to_csv(index=False)
+                        st.download_button(
+                            label="⬇ Exportar G2 (CSV)",
+                            data=_csv_g2,
+                            file_name="G2_SEM_CONTRATO_SEM_ACAO.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    else:
+                        st.success("✅ Nenhum item em G2 no momento.")
+
+                    st.divider()
+
+                    # ── Grupos Excluídos ───────────────────────────────────────
+                    st.markdown("### ℹ️ Grupos Excluídos (em acompanhamento)")
+
+                    _df_g3 = _df_pcm[_df_pcm["grupo_pcm"] == "G3_TEM_CONTRATO_E_PEDIDO"]
+                    _df_g4 = _df_pcm[_df_pcm["grupo_pcm"] == "G4_SEM_CONTRATO_EM_ACAO"]
+
+                    _col_g3, _col_g4 = st.columns(2)
+                    with _col_g3:
+                        st.metric("G3 (em andamento)", len(_df_g3))
+                        st.caption("TEM CONTRATO E JÁ TEM PEDIDO — Acompanhar recebimento")
+                    with _col_g4:
+                        st.metric("G4 (em andamento)", len(_df_g4))
+                        st.caption("SEM CONTRATO MAS EM CONTRATAÇÃO — Acompanhar negociação")
+
+            except Exception as _e_pcm:
+                st.error(f"❌ Erro ao processar PCM: {_e_pcm}")
+                st.exception(_e_pcm)
+        else:
+            st.info("ℹ️ Carregue um arquivo PCM_*.xlsx para começar a análise.")
 
 
 else:

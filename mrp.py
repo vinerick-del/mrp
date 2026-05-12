@@ -2397,6 +2397,153 @@ def main() -> None:
         if arq.endswith(".csv") and not arq.startswith("rejected"):
             print(f"    ✓ {arq}")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROCESSAMENTO PCM: PLANEJAMENTO DE MATERIAIS CRÍTICOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ler_pcm(source) -> pd.DataFrame:
+    """
+    Lê arquivo PCM_[DATA].xlsx com análise de itens críticos.
+
+    Identifica dois grupos mutuamente exclusivos:
+    - G1: TEM CONTRATO MAS SEM PEDIDO → Ação: Emitir OC (Planejador)
+    - G2: SEM CONTRATO E SEM AÇÃO → Ação: Iniciar contratação (Comprador)
+
+    Retorna DataFrame com colunas originais + classificação.
+    """
+    separador("PARSER │ PCM (Análise de Materiais Críticos)")
+
+    try:
+        df = pd.read_excel(source, sheet_name="MRP", engine="openpyxl")
+    except Exception as e:
+        print(f"  ⚠ Erro ao ler PCM: {e}")
+        return pd.DataFrame()
+
+    if df.empty:
+        print(f"  ⚠ Sheet 'MRP' vazio ou não encontrado")
+        return pd.DataFrame()
+
+    print(f"  Linhas lidas: {len(df)}")
+
+    # Mapeamento de colunas por índice (conforme doc PCM)
+    col_map = {
+        "chave": 0,
+        "codigo": 4,
+        "descricao": 5,
+        "planejador": 9,
+        "sugestao_pedidos": 13,
+        "saldo_pedidos": 17,
+        "saldo_contrato": 18,
+        "demanda_anual": 22,
+        "comprador": 23,
+        "status_contratacao": 24,
+        "linhas_disponiveis": 25,
+        "saldo_linha": 29,
+        "nivel_estoque": 31,
+    }
+
+    # Renomear colunas por índice
+    df_map = {}
+    for col_name, col_idx in col_map.items():
+        if col_idx < len(df.columns):
+            col_orig = df.columns[col_idx]
+            df_map[col_orig] = col_name
+
+    df = df.rename(columns=df_map)
+
+    # Normalizar valores numéricos
+    _num_cols = ["saldo_pedidos", "saldo_contrato", "sugestao_pedidos", "demanda_anual"]
+    for col in _num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Normalizar strings
+    for col in ["planejador", "comprador", "status_contratacao", "nivel_estoque"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str).str.strip()
+
+    # Filtrar apenas críticos e abaixo segurança
+    if "nivel_estoque" in df.columns:
+        df = df[
+            (df["nivel_estoque"].str.contains("CRÍTICO", case=False, na=False)) |
+            (df["nivel_estoque"].str.contains("ABAIXO", case=False, na=False))
+        ].copy()
+
+    # ── Calcular Grupos ─────────────────────────────────────────────────────────
+    df["grupo_pcm"] = "OUTRO"  # padrão
+
+    # G1: TEM CONTRATO MAS SEM PEDIDO
+    g1_mask = (df["saldo_contrato"] > 0) & (df["saldo_pedidos"] <= 0)
+    df.loc[g1_mask, "grupo_pcm"] = "G1_TEM_CONTRATO_SEM_PEDIDO"
+
+    # G2: SEM CONTRATO E SEM AÇÃO
+    g2_mask = (df["saldo_contrato"] <= 0) & (df["status_contratacao"] == "")
+    df.loc[g2_mask, "grupo_pcm"] = "G2_SEM_CONTRATO_SEM_ACAO"
+
+    # Grupo 3 (excluído): TEM CONTRATO E JÁ TEM PEDIDO
+    g3_mask = (df["saldo_contrato"] > 0) & (df["saldo_pedidos"] > 0)
+    df.loc[g3_mask, "grupo_pcm"] = "G3_TEM_CONTRATO_E_PEDIDO"
+
+    # Grupo 4 (excluído): SEM CONTRATO MAS EM CONTRATAÇÃO
+    g4_mask = (df["saldo_contrato"] <= 0) & (df["status_contratacao"] != "")
+    df.loc[g4_mask, "grupo_pcm"] = "G4_SEM_CONTRATO_EM_ACAO"
+
+    # Determinar tipo de acordo (PREÇO vs QUANTIDADE)
+    if "saldo_linha" in df.columns:
+        df["tipo_acordo"] = df["saldo_linha"].apply(
+            lambda x: "ACORDO PREÇO" if x == 1 else "ACORDO QUANTIDADE"
+        )
+    else:
+        df["tipo_acordo"] = "DESCONHECIDO"
+
+    # Contar críticos por grupo
+    df["eh_critico"] = df["nivel_estoque"].str.contains("CRÍTICO", case=False, na=False)
+
+    print(f"\n  Grupos encontrados:")
+    for grp in ["G1_TEM_CONTRATO_SEM_PEDIDO", "G2_SEM_CONTRATO_SEM_ACAO",
+                "G3_TEM_CONTRATO_E_PEDIDO", "G4_SEM_CONTRATO_EM_ACAO"]:
+        subset = df[df["grupo_pcm"] == grp]
+        if not subset.empty:
+            criticos = subset["eh_critico"].sum()
+            print(f"    {grp:<40} : {len(subset):>3} itens ({criticos} críticos)")
+
+    return df
+
+
+def resumo_pcm(df_pcm: pd.DataFrame) -> dict:
+    """Calcula métricas KPI para análise PCM."""
+    if df_pcm.empty:
+        return {}
+
+    resumo = {
+        "total_itens": len(df_pcm),
+        "total_criticos": df_pcm["eh_critico"].sum() if "eh_critico" in df_pcm.columns else 0,
+        "g1_total": len(df_pcm[df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO"]),
+        "g1_criticos": len(df_pcm[(df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO") &
+                                   (df_pcm["eh_critico"] == True)]),
+        "g2_total": len(df_pcm[df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO"]),
+        "g2_criticos": len(df_pcm[(df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO") &
+                                   (df_pcm["eh_critico"] == True)]),
+        "g3_total": len(df_pcm[df_pcm["grupo_pcm"] == "G3_TEM_CONTRATO_E_PEDIDO"]),
+        "g4_total": len(df_pcm[df_pcm["grupo_pcm"] == "G4_SEM_CONTRATO_EM_ACAO"]),
+    }
+
+    # Calcular percentual de cobertura
+    g1_total = resumo["g1_total"]
+    if g1_total > 0:
+        resumo["g1_percentual_critico"] = round(resumo["g1_criticos"] / g1_total * 100, 1)
+    else:
+        resumo["g1_percentual_critico"] = 0
+
+    g2_total = resumo["g2_total"]
+    if g2_total > 0:
+        resumo["g2_percentual_critico"] = round(resumo["g2_criticos"] / g2_total * 100, 1)
+    else:
+        resumo["g2_percentual_critico"] = 0
+
+    return resumo
+
     print(f"\n{'═' * W}\n")
 
 
