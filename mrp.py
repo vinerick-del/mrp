@@ -2821,9 +2821,14 @@ def resumo_cobertura_por_dimensao(df_pcm: pd.DataFrame, dimensao: str,
             contratar          =("grupo_pcm",          lambda x: (x == "G2_CONTRATAR").sum()),
             follow_up          =("grupo_pcm",          lambda x: (x == "G3_FOLLOW_UP").sum()),
             aguardar           =("grupo_pcm",          lambda x: (x == "G4_AGUARDAR_CONTRATACAO").sum()),
-            qtd_oc_sugerida    =("sugestao_pedidos",   lambda x: x[df_exp.loc[x.index, "grupo_pcm"] == "G1_EMITIR_PEDIDO"].sum()),
         )
     )
+
+    # Calcular qtd_oc_sugerida separadamente para evitar index alignment issues após explode
+    g1_data = df_exp[df_exp["grupo_pcm"] == "G1_EMITIR_PEDIDO"].groupby(dim_col)["sugestao_pedidos"].sum().reset_index()
+    g1_data.columns = [dim_col, "qtd_oc_sugerida"]
+    agg = agg.merge(g1_data, on=dim_col, how="left")
+    agg["qtd_oc_sugerida"] = agg["qtd_oc_sugerida"].fillna(0)
     agg["nao_cobertos"]  = agg["total_itens"] - agg["itens_cobertos"]
     agg["pct_cobertos"]  = (agg["itens_cobertos"] / agg["total_itens"].replace(0, 1) * 100).round(1)
     agg["sem_contrato"]  = agg["total_itens"] - agg["itens_com_contrato"]
