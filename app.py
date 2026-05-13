@@ -3817,12 +3817,23 @@ if "resultado" in st.session_state:
 
         if _f_pcm is not None:
             try:
-                # Passar demanda real se MRP já processado
-                _dem_para_pcm        = r.get("demanda_df",        pd.DataFrame())
-                _dem_detail_para_pcm = r.get("demanda_detail_df", pd.DataFrame())
-                _df_pcm = ler_pcm(_f_pcm,
-                                  df_demanda=_dem_para_pcm if not _dem_para_pcm.empty else None,
-                                  df_demanda_detail=_dem_detail_para_pcm if not _dem_detail_para_pcm.empty else None)
+                # Passar demanda real se MRP já processado (tolerante a r indefinido)
+                try:
+                    _dem_para_pcm        = r.get("demanda_df",        pd.DataFrame())
+                    _dem_detail_para_pcm = r.get("demanda_detail_df", pd.DataFrame())
+                    if not isinstance(_dem_para_pcm, pd.DataFrame):
+                        _dem_para_pcm = pd.DataFrame()
+                    if not isinstance(_dem_detail_para_pcm, pd.DataFrame):
+                        _dem_detail_para_pcm = pd.DataFrame()
+                except Exception:
+                    _dem_para_pcm        = pd.DataFrame()
+                    _dem_detail_para_pcm = pd.DataFrame()
+
+                _df_pcm = ler_pcm(
+                    _f_pcm,
+                    df_demanda        = _dem_para_pcm        if not _dem_para_pcm.empty        else None,
+                    df_demanda_detail = _dem_detail_para_pcm if not _dem_detail_para_pcm.empty else None,
+                )
 
                 if _df_pcm.empty:
                     st.error("❌ Arquivo não contém dados ou sheet 'MRP' não encontrado.")
