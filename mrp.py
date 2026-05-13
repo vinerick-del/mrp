@@ -2402,6 +2402,485 @@ def main() -> None:
 # PROCESSAMENTO PCM: PLANEJAMENTO DE MATERIAIS CRÍTICOS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def ler_pcm(source, df_demanda=None, df_demanda_detail=None) -> pd.DataFrame:
+    """
+    Lê arquivo PCM_[DATA].xlsx/.csv com análise de itens críticos.
+
+    Mapeamento de colunas por índice (33 campos):
+      0=CHAVE, 3=DEP., 4=CÓDIGO, 5=DESCRIÇÃO, 7=GRUPO, 8=DEMANDANTES,
+      9=PLANEJADOR, 10=VALOR UNITÁRIO, 11=ESTOQUE SEGURANÇA, 12=ESTOQUE MÁXIMO,
+      13=SUGESTÃO PEDIDOS, 14=LT, 15=SALDO ESTOQUE, 16=SALDO EM INSPEÇÃO,
+      17=SALDO PEDIDOS, 18=SALDO CONTRATO, 21=RESERVAS, 22=DEMANDA ANUAL,
+      23=COMPRADOR, 24=STATUS CONTRATAÇÃO, 25=LINHAS DISPONÍVEIS,
+      26=LINHAS OC, 27=OC, 28=FORNECEDOR, 29=SALDO LINHA, 30=PROG. ORÇAMENTÁRIOS,
+      31=NÍVEL DE ESTOQUE, 32=ABC
+
+    df_demanda:        DataFrame [material, mes (YYYY-MM), demanda] – para período firme real.
+    df_demanda_detail: DataFrame [material, mes, departamento, programa_orcamentario, demanda]
+                       – para totais por programa/departamento.
+
+    Fluxograma:
+    - Período firme  = soma demanda mês atual + 2 meses à frente (real de df_demanda)
+    - Estoque seg.   = período firme + LT (default 60 dias = 2 meses adicionais)
+    - Cobertura      = saldo_estoque + saldo_inspecao + saldo_pedidos
+    - Dias cobertura = consumo mês a mês até zerar
+    """
+    from datetime import date as _date
+    separador("PARSER │ PCM (Análise de Materiais Críticos)")
+
+    try:
+        if hasattr(source, "name") and str(source.name).endswith(".csv"):
+            df = pd.read_csv(source, sep=";", encoding="utf-8-sig", dtype=str)
+        else:
+            df = pd.read_excel(source, sheet_name="MRP", engine="openpyxl", dtype=str)
+    except Exception as e:
+        print(f"  ⚠ Erro ao ler PCM: {e}")
+        return pd.DataFrame()
+
+    if df.empty:
+        print("  ⚠ Sheet 'MRP' vazio ou não encontrado")
+        return pd.DataFrame()
+
+    df.columns = [str(c).replace("\n", " ").strip() for c in df.columns]
+    print(f"  Linhas lidas: {len(df)}  |  Colunas: {len(df.columns)}")
+
+    # ── Normalizar valor para número (formato BR) ─────────────────────────────
+    _INVALID_STRS = {"nan", "none", "nat", "null", "-", "—", "", "n/a", "#n/a"}
+
+    def _to_num(v, cap=None) -> float:
+        s = str(v).strip()
+        if s.lower() in _INVALID_STRS:
+            return 0.0
+        try:
+            # Formato BR: ponto=milhar, vírgula=decimal
+            s2 = s.replace(".", "").replace(",", ".")
+            result = float(s2)
+            if cap is not None and result > cap:
+                return 0.0  # valor improvável = dado inválido
+            return result
+        except Exception:
+            return 0.0
+
+    def _clean_str(v) -> str:
+        s = str(v).strip()
+        return "" if s.lower() in _INVALID_STRS else s
+
+    # ── Mapeamento por índice ─────────────────────────────────────────────────
+    col_map = {
+        "chave": 0, "departamento_pcm": 3, "codigo": 4, "descricao": 5,
+        "grupo_material": 7, "demandantes": 8, "planejador": 9,
+        "valor_unitario": 10, "estoque_seguranca_pcm": 11, "estoque_maximo": 12,
+        "sugestao_pedidos": 13, "lead_time_dias": 14, "saldo_estoque": 15,
+        "saldo_inspecao": 16, "saldo_pedidos": 17, "saldo_contrato": 18,
+        "reservas_atendidas": 21, "demanda_anual": 22,
+        "comprador": 23, "status_contratacao": 24,
+        "linhas_disponiveis": 25, "linhas_oc": 26, "oc": 27,
+        "fornecedor": 28, "saldo_linha": 29,
+        "prog_orcamentario_raw": 30, "nivel_estoque": 31, "classe_abc": 32,
+    }
+    df_map = {}
+    for col_name, col_idx in col_map.items():
+        if col_idx < len(df.columns):
+            df_map[df.columns[col_idx]] = col_name
+    df = df.rename(columns=df_map)
+
+    # ── Normalizar colunas numéricas ─────────────────────────────────────────
+    _CAP_DEMANDA   = 10_000_000   # máximo plausível de demanda anual
+    _CAP_ESTOQUE   = 50_000_000
+    _CAP_CONTRATO  = 100_000_000
+
+    for col, cap in [
+        ("saldo_estoque",       _CAP_ESTOQUE),
+        ("saldo_inspecao",      _CAP_ESTOQUE),
+        ("saldo_pedidos",       _CAP_ESTOQUE),
+        ("saldo_contrato",      _CAP_CONTRATO),
+        ("sugestao_pedidos",    _CAP_ESTOQUE),
+        ("demanda_anual",       _CAP_DEMANDA),
+        ("lead_time_dias",      730),
+        ("valor_unitario",      None),
+        ("estoque_seguranca_pcm", _CAP_ESTOQUE),
+        ("linhas_disponiveis",  100),
+    ]:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda v, c=cap: _to_num(v, c))
+        else:
+            df[col] = 0.0
+
+    # ── Normalizar colunas string ─────────────────────────────────────────────
+    for col in ["planejador", "comprador", "status_contratacao", "nivel_estoque",
+                "grupo_material", "prog_orcamentario_raw", "demandantes",
+                "codigo", "descricao", "fornecedor", "classe_abc"]:
+        if col in df.columns:
+            df[col] = df[col].apply(_clean_str)
+        else:
+            df[col] = ""
+
+    # ── Tipo de acordo: linhas_disponiveis == 1 → PREÇO, >1 → QUANTIDADE ─────
+    df["tipo_acordo"] = df["linhas_disponiveis"].apply(
+        lambda x: "ACORDO PREÇO" if x == 1.0 else ("ACORDO QUANTIDADE" if x > 1 else "SEM ACORDO")
+    )
+
+    # ── Período firme e estoque de segurança ──────────────────────────────────
+    today = _date.today()
+    LT_PADRAO = 60.0   # dias
+    MESES_FIRME = 3    # mês atual + 2 à frente
+
+    if df_demanda is not None and not df_demanda.empty:
+        # Calcular período firme a partir da demanda real
+        firm_months = []
+        for i in range(MESES_FIRME):
+            m_offset = today.month - 1 + i
+            y = today.year + m_offset // 12
+            m = m_offset % 12 + 1
+            firm_months.append(f"{y}-{m:02d}")
+
+        lt_months_after = 2  # 60 dias = 2 meses após o período firme
+        lt_months_list = []
+        for i in range(lt_months_after):
+            m_offset = today.month - 1 + MESES_FIRME + i
+            y = today.year + m_offset // 12
+            m = m_offset % 12 + 1
+            lt_months_list.append(f"{y}-{m:02d}")
+
+        # Garantir colunas necessárias no df_demanda
+        _dem_col = "demanda" if "demanda" in df_demanda.columns else "quantidade"
+        _mat_col = "material" if "material" in df_demanda.columns else df_demanda.columns[0]
+        _mes_col = "mes" if "mes" in df_demanda.columns else "periodo"
+
+        dem_firm = (df_demanda[df_demanda[_mes_col].isin(firm_months)]
+                    .groupby(_mat_col)[_dem_col].sum()
+                    .rename("periodo_firme_real"))
+        dem_lt   = (df_demanda[df_demanda[_mes_col].isin(lt_months_list)]
+                    .groupby(_mat_col)[_dem_col].sum()
+                    .rename("lt_demanda_real"))
+
+        df["codigo_norm"] = df["codigo"].astype(str).str.strip()
+        df = df.merge(dem_firm, left_on="codigo_norm", right_index=True, how="left")
+        df = df.merge(dem_lt,   left_on="codigo_norm", right_index=True, how="left")
+
+        df["periodo_firme"]          = df["periodo_firme_real"].fillna(
+            df["demanda_anual"] / 12 * MESES_FIRME)
+        df["lt_demanda"]             = df["lt_demanda_real"].fillna(
+            df["demanda_anual"] / 12 * lt_months_after)
+        df["estoque_seguranca_calc"] = df["periodo_firme"] + df["lt_demanda"]
+
+        # Dias de cobertura: consumo mês a mês
+        all_future = sorted([m for m in df_demanda[_mes_col].unique()
+                              if m >= today.strftime("%Y-%m")])
+        # Pivô: material × mes → demanda
+        _piv = (df_demanda[df_demanda[_mes_col].isin(all_future)]
+                .pivot_table(index=_mat_col, columns=_mes_col, values=_dem_col,
+                             aggfunc="sum", fill_value=0))
+
+        def _calc_dias(row):
+            stock = row["saldo_estoque"] + row["saldo_inspecao"]
+            if stock <= 0:
+                return 0
+            cod = row["codigo_norm"]
+            if cod not in _piv.index:
+                dm = row["demanda_anual"] / 12
+                return int(stock / dm * 30) if dm > 0 else 999
+            days = 0
+            remaining = float(stock)
+            for mes in _piv.columns:
+                d = float(_piv.at[cod, mes])
+                if d <= 0:
+                    days += 30
+                    continue
+                if d >= remaining:
+                    days += int(remaining / d * 30)
+                    return days
+                remaining -= d
+                days += 30
+            # Stock outlasts all future months
+            return min(days + int(remaining / (_piv.at[cod, _piv.columns[-1]] or 1) * 30), 999)
+
+        df["dias_cobertura"] = df.apply(_calc_dias, axis=1)
+        df.drop(columns=["codigo_norm", "periodo_firme_real", "lt_demanda_real",
+                         "lt_demanda"], errors="ignore", inplace=True)
+    else:
+        # Fallback sem df_demanda
+        df["demanda_mensal"]         = df["demanda_anual"] / 12
+        df["periodo_firme"]          = df["demanda_mensal"] * MESES_FIRME
+        lt = df["lead_time_dias"].apply(lambda x: x if x > 0 else LT_PADRAO)
+        df["estoque_seguranca_calc"] = df["periodo_firme"] + (lt / 30) * df["demanda_mensal"]
+        df["dias_cobertura"]         = (
+            (df["saldo_estoque"] + df["saldo_inspecao"])
+            / df["demanda_mensal"].replace(0, pd.NA) * 30
+        ).fillna(0).clip(upper=999).round(0).astype(int)
+
+    # ── Cobertura ─────────────────────────────────────────────────────────────
+    df["cobertura_total"]    = df["saldo_estoque"] + df["saldo_inspecao"] + df["saldo_pedidos"]
+    df["cobertura_sem_ped"]  = df["saldo_estoque"] + df["saldo_inspecao"]
+    df["coberto_periodo_firme"] = df["cobertura_total"] >= df["periodo_firme"]
+    df["coberto_estoque_seg"]   = df["cobertura_total"] >= df["estoque_seguranca_calc"]
+    df["gap_cobertura"]         = (df["cobertura_total"] - df["estoque_seguranca_calc"]).round(2)
+
+    # ── Flags auxiliares ──────────────────────────────────────────────────────
+    df["eh_critico"]  = df["nivel_estoque"].str.contains("CRÍTICO",  case=False, na=False)
+    df["eh_abaixo"]   = df["nivel_estoque"].str.contains("ABAIXO",   case=False, na=False)
+    df["tem_demanda"] = df["demanda_anual"] > 0
+
+    # ── Classificação de ação sugerida ────────────────────────────────────────
+    def _acao(row) -> str:
+        nivel  = row["nivel_estoque"].upper()
+        critico_abaixo = ("CRÍTICO" in nivel) or ("ABAIXO" in nivel)
+        coberto    = bool(row["coberto_periodo_firme"])
+        tem_ped    = row["saldo_pedidos"] > 0
+        tem_cont   = row["saldo_contrato"] > 0
+        em_cont    = _clean_str(row["status_contratacao"]) != ""
+        ped_cobre  = row["cobertura_total"] >= row["estoque_seguranca_calc"]
+        sug        = row["sugestao_pedidos"]
+        cont_insuf = tem_cont and (row["saldo_contrato"] < sug * 0.5) and sug > 0
+        dias       = row["dias_cobertura"]
+
+        # Contrato insuficiente → alerta de aditamento
+        if cont_insuf and critico_abaixo:
+            return "⚠️ POSSÍVEL ADITAMENTO CONTRATUAL"
+
+        if coberto:
+            if tem_ped:
+                return "📞 FOLLOW-UP"
+            return "✅ COBERTO"
+
+        # Não coberto
+        if tem_cont:
+            if ped_cobre:
+                return "📞 FOLLOW-UP"
+            return "📋 EMITIR PEDIDO DE COMPRA"
+
+        if em_cont:
+            return "⏳ AGUARDAR CONTRATAÇÃO"
+
+        # Sem contrato e sem ação
+        if critico_abaixo:
+            return "🚨 CONTRATAR URGENTE"
+        if dias <= 60:
+            return "⚠️ CONTRATAR PREVENTIVO"
+        return "✅ COBERTO"
+
+    df["acao_sugerida"] = df.apply(_acao, axis=1)
+
+    # ── Grupos ────────────────────────────────────────────────────────────────
+    def _grupo(acao: str) -> str:
+        if "EMITIR PEDIDO" in acao or "ADITAMENTO" in acao:
+            return "G1_EMITIR_PEDIDO"
+        if "CONTRATAR URGENTE" in acao or "CONTRATAR PREVENTIVO" in acao:
+            return "G2_CONTRATAR"
+        if "AGUARDAR" in acao:
+            return "G4_AGUARDAR_CONTRATACAO"
+        if "FOLLOW-UP" in acao:
+            return "G3_FOLLOW_UP"
+        return "G0_COBERTO"
+
+    df["grupo_pcm"] = df["acao_sugerida"].apply(_grupo)
+
+    df["area_responsavel"] = df["grupo_pcm"].map({
+        "G1_EMITIR_PEDIDO":       "PLANEJAMENTO",
+        "G3_FOLLOW_UP":           "PLANEJAMENTO",
+        "G2_CONTRATAR":           "COMPRAS",
+        "G4_AGUARDAR_CONTRATACAO":"COMPRAS",
+        "G0_COBERTO":             "—",
+    }).fillna("—")
+
+    df["responsavel"] = df.apply(
+        lambda r: _clean_str(r["planejador"]) or "Não designado"
+        if r["area_responsavel"] == "PLANEJAMENTO"
+        else _clean_str(r["comprador"]) or "Não designado",
+        axis=1,
+    )
+
+    # ── Plano de ação (texto simples por item) ────────────────────────────────
+    def _plano(row) -> str:
+        acao = row["acao_sugerida"]
+        dias = int(row["dias_cobertura"])
+        sug  = row["sugestao_pedidos"]
+        if "COBERTO" in acao:
+            return f"Coberto — {dias}d de cobertura"
+        if "FOLLOW-UP" in acao:
+            return f"Ligar ao fornecedor — confirmar status de entrega ({dias}d cobertura)"
+        if "EMITIR PEDIDO" in acao:
+            q = sug if sug > 0 else max(-row["gap_cobertura"], 0)
+            return f"Emitir OC de {q:,.0f} un. usando saldo de contrato"
+        if "ADITAMENTO" in acao:
+            return f"Contrato insuficiente — solicitar aditamento ({dias}d cobertura)"
+        if "AGUARDAR" in acao:
+            st = row["status_contratacao"]
+            return f"Em contratação: '{st}' — acompanhar ({dias}d cobertura)"
+        if "CONTRATAR" in acao:
+            return f"Designar comprador e iniciar contratação ({dias}d cobertura)"
+        return "Verificar"
+
+    df["plano_acao"] = df.apply(_plano, axis=1)
+
+    # ── Programas e departamentos (split por "/") ─────────────────────────────
+    # Cada item pode ter vários programas/departamentos; manter como listas internas
+    # A explosão é feita nas funções de resumo para não duplicar itens
+    def _split_barra(v: str) -> list[str]:
+        return [x.strip() for x in v.split("/") if x.strip()]
+
+    df["progs_list"] = df["prog_orcamentario_raw"].apply(_split_barra)
+    df["depts_list"] = df["demandantes"].apply(_split_barra)
+
+    # Primeiro programa e departamento (para exibição principal)
+    df["prog_orcamentario"] = df["progs_list"].apply(lambda x: x[0] if x else "SEM PROGRAMA")
+    df["departamento"]      = df["depts_list"].apply(lambda x: x[0] if x else "SEM DEPARTAMENTO")
+
+    print(f"\n  Ações calculadas:")
+    for grp in ["G1_EMITIR_PEDIDO", "G2_CONTRATAR", "G4_AGUARDAR_CONTRATACAO",
+                "G3_FOLLOW_UP", "G0_COBERTO"]:
+        sub = df[df["grupo_pcm"] == grp]
+        if not sub.empty:
+            crit = int(sub["eh_critico"].sum())
+            print(f"    {grp:<35} : {len(sub):>4} itens  ({crit} críticos)")
+
+    return df
+
+
+def resumo_pcm(df_pcm: pd.DataFrame) -> dict:
+    """Calcula KPIs completos do PCM."""
+    if df_pcm.empty:
+        return {}
+
+    total = len(df_pcm)
+    criticos = int(df_pcm["eh_critico"].sum()) if "eh_critico" in df_pcm.columns else 0
+
+    def _cnt(grp):  return int((df_pcm["grupo_pcm"] == grp).sum())
+    def _crit(grp): return int(((df_pcm["grupo_pcm"] == grp) & df_pcm["eh_critico"]).sum())
+
+    g1t, g2t = _cnt("G1_EMITIR_PEDIDO"), _cnt("G2_CONTRATAR")
+    g4t, g3t = _cnt("G4_AGUARDAR_CONTRATACAO"), _cnt("G3_FOLLOW_UP")
+
+    cobertos    = int(df_pcm["coberto_periodo_firme"].sum()) if "coberto_periodo_firme" in df_pcm.columns else 0
+    nao_cobertos = total - cobertos
+
+    # Totais consolidados de quantidade para compra
+    _g1_df = df_pcm[df_pcm["grupo_pcm"] == "G1_EMITIR_PEDIDO"]
+    qtd_total_oc = _g1_df["sugestao_pedidos"].sum()
+
+    _g2_df = df_pcm[df_pcm["grupo_pcm"] == "G2_CONTRATAR"]
+    qtd_total_contratar = _g2_df["sugestao_pedidos"].sum()
+
+    return {
+        "total_itens": total,
+        "total_criticos": criticos,
+        "total_com_demanda": int(df_pcm["tem_demanda"].sum()) if "tem_demanda" in df_pcm.columns else 0,
+        "cobertos_periodo_firme": cobertos,
+        "nao_cobertos_periodo_firme": nao_cobertos,
+        "g1_total": g1t,
+        "g1_criticos": _crit("G1_EMITIR_PEDIDO"),
+        "g2_total": g2t,
+        "g2_criticos": _crit("G2_CONTRATAR"),
+        "g3_followup_total": g3t,
+        "g4_total": g4t,
+        "g1_percentual_critico": round(_crit("G1_EMITIR_PEDIDO") / g1t * 100, 1) if g1t > 0 else 0,
+        "g2_percentual_critico": round(_crit("G2_CONTRATAR") / g2t * 100, 1) if g2t > 0 else 0,
+        "qtd_total_oc": qtd_total_oc,
+        "qtd_total_contratar": qtd_total_contratar,
+        "alerta_g1_bottleneck": g1t > 100,
+        "alerta_g2_capacidade": g2t > 500,
+        "alerta_criticos_emergencia": criticos > 436,
+    }
+
+
+def resumo_cobertura_por_dimensao(df_pcm: pd.DataFrame, dimensao: str,
+                                   df_demanda_detail=None) -> pd.DataFrame:
+    """
+    Cobertura agrupada por dimensão com split por "/".
+    dimensao: 'prog_orcamentario' | 'departamento' | 'grupo_material'
+    """
+    if df_pcm.empty:
+        return pd.DataFrame()
+
+    # Para programa e departamento, explode as listas
+    if dimensao == "prog_orcamentario" and "progs_list" in df_pcm.columns:
+        df_exp = df_pcm.copy()
+        df_exp = df_exp.explode("progs_list").rename(columns={"progs_list": "_dim_val"})
+        df_exp = df_exp[df_exp["_dim_val"].notna() & (df_exp["_dim_val"] != "")]
+        dim_col = "_dim_val"
+    elif dimensao == "departamento" and "depts_list" in df_pcm.columns:
+        df_exp = df_pcm.copy()
+        df_exp = df_exp.explode("depts_list").rename(columns={"depts_list": "_dim_val"})
+        df_exp = df_exp[df_exp["_dim_val"].notna() & (df_exp["_dim_val"] != "")]
+        dim_col = "_dim_val"
+    else:
+        if dimensao not in df_pcm.columns:
+            return pd.DataFrame()
+        df_exp = df_pcm.copy()
+        dim_col = dimensao
+
+    agg = (
+        df_exp.groupby(dim_col, as_index=False)
+        .agg(
+            total_itens        =(dim_col,             "count"),
+            itens_criticos     =("eh_critico",         "sum"),
+            itens_cobertos     =("coberto_periodo_firme", "sum"),
+            itens_com_contrato =("saldo_contrato",     lambda x: (x > 0).sum()),
+            itens_com_pedido   =("saldo_pedidos",      lambda x: (x > 0).sum()),
+            emitir_pedido      =("grupo_pcm",          lambda x: (x == "G1_EMITIR_PEDIDO").sum()),
+            contratar          =("grupo_pcm",          lambda x: (x == "G2_CONTRATAR").sum()),
+            follow_up          =("grupo_pcm",          lambda x: (x == "G3_FOLLOW_UP").sum()),
+            aguardar           =("grupo_pcm",          lambda x: (x == "G4_AGUARDAR_CONTRATACAO").sum()),
+            qtd_oc_sugerida    =("sugestao_pedidos",   lambda x: x[df_exp.loc[x.index, "grupo_pcm"] == "G1_EMITIR_PEDIDO"].sum()),
+        )
+    )
+    agg["nao_cobertos"]  = agg["total_itens"] - agg["itens_cobertos"]
+    agg["pct_cobertos"]  = (agg["itens_cobertos"] / agg["total_itens"].replace(0, 1) * 100).round(1)
+    agg["sem_contrato"]  = agg["total_itens"] - agg["itens_com_contrato"]
+    agg["risco"] = agg.apply(
+        lambda r: "🔴 ALTO"   if r["contratar"] > 0
+        else      "🟡 MÉDIO"  if r["nao_cobertos"] > 0
+        else      "🟢 OK",
+        axis=1,
+    )
+
+    # Se df_demanda_detail fornecido, calcular demanda real por programa/depto
+    if df_demanda_detail is not None and not df_demanda_detail.empty:
+        _dcol_map = {
+            "prog_orcamentario": "programa_orcamentario",
+            "departamento":      "departamento",
+        }
+        _dcol = _dcol_map.get(dimensao)
+        _dem_agg_col = "demanda" if "demanda" in df_demanda_detail.columns else "quantidade"
+        if _dcol and _dcol in df_demanda_detail.columns:
+            _dem_dim = (df_demanda_detail.groupby(_dcol)[_dem_agg_col].sum()
+                        .reset_index().rename(columns={_dcol: dim_col, _dem_agg_col: "demanda_real"}))
+            agg = agg.merge(_dem_dim, on=dim_col, how="left")
+            agg["demanda_real"] = agg["demanda_real"].fillna(0)
+
+    return agg.rename(columns={dim_col: "Dimensão"}).sort_values("nao_cobertos", ascending=False)
+
+
+def gerar_atividades_por_colaborador(df_pcm: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """
+    Retorna dict {colaborador: DataFrame} separado por área.
+    """
+    if df_pcm.empty:
+        return {}
+
+    resultado = {}
+    _cols = [c for c in ["codigo", "descricao", "grupo_material", "nivel_estoque",
+                          "acao_sugerida", "plano_acao", "dias_cobertura",
+                          "sugestao_pedidos", "saldo_contrato", "saldo_pedidos",
+                          "status_contratacao", "prog_orcamentario", "departamento"]
+             if c in df_pcm.columns]
+
+    # G1 + Follow-up → Planejadores
+    df_plan = df_pcm[df_pcm["area_responsavel"] == "PLANEJAMENTO"].copy()
+    for colab in sorted(df_plan["responsavel"].unique()):
+        sub = df_plan[df_plan["responsavel"] == colab][_cols].copy()
+        resultado[f"PLANEJAMENTO | {colab}"] = sub.sort_values("dias_cobertura")
+
+    # G2 + G4 → Compradores
+    df_comp = df_pcm[df_pcm["area_responsavel"] == "COMPRAS"].copy()
+    for colab in sorted(df_comp["responsavel"].unique()):
+        sub = df_comp[df_comp["responsavel"] == colab][_cols].copy()
+        resultado[f"COMPRAS | {colab}"] = sub.sort_values("dias_cobertura")
+
+    return resultado
+
+
+
 def ler_pcm(source) -> pd.DataFrame:
     """
     Lê arquivo PCM_[DATA].xlsx/.csv com análise de itens críticos.

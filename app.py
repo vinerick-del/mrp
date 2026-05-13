@@ -3817,7 +3817,12 @@ if "resultado" in st.session_state:
 
         if _f_pcm is not None:
             try:
-                _df_pcm = ler_pcm(_f_pcm)
+                # Passar demanda real se MRP já processado
+                _dem_para_pcm        = r.get("demanda_df",        pd.DataFrame())
+                _dem_detail_para_pcm = r.get("demanda_detail_df", pd.DataFrame())
+                _df_pcm = ler_pcm(_f_pcm,
+                                  df_demanda=_dem_para_pcm if not _dem_para_pcm.empty else None,
+                                  df_demanda_detail=_dem_detail_para_pcm if not _dem_detail_para_pcm.empty else None)
 
                 if _df_pcm.empty:
                     st.error("❌ Arquivo não contém dados ou sheet 'MRP' não encontrado.")
@@ -3831,44 +3836,56 @@ if "resultado" in st.session_state:
                         <div class="kpi-label">{label}</div>
                     </div>"""
 
+                    # ── KPIs ─────────────────────────────────────────────────
                     _kc1, _kc2, _kc3, _kc4, _kc5, _kc6 = st.columns(6)
-                    _kc1.markdown(_kpi_html(_res_pcm.get("total_itens",0), "Total Itens"), unsafe_allow_html=True)
-                    _kc2.markdown(_kpi_html(_res_pcm.get("total_criticos",0), "🔴 Críticos", "danger"), unsafe_allow_html=True)
-                    _kc3.markdown(_kpi_html(_res_pcm.get("total_com_demanda",0), "Com Demanda", "orange"), unsafe_allow_html=True)
-                    _kc4.markdown(_kpi_html(_res_pcm.get("cobertos_periodo_firme",0), "✅ Cobertos PF", "success"), unsafe_allow_html=True)
-                    _kc5.markdown(_kpi_html(_res_pcm.get("g1_total",0), "G1 — Emitir OC", "warning"), unsafe_allow_html=True)
-                    _kc6.markdown(_kpi_html(_res_pcm.get("g2_total",0), "G2 — Contratar", "danger"), unsafe_allow_html=True)
+                    _kc1.markdown(_kpi_html(_res_pcm.get("total_itens",0),  "Total Itens"), unsafe_allow_html=True)
+                    _kc2.markdown(_kpi_html(_res_pcm.get("total_criticos",0),"🔴 Críticos","danger"), unsafe_allow_html=True)
+                    _kc3.markdown(_kpi_html(_res_pcm.get("cobertos_periodo_firme",0),"✅ Cobertos PF","success"), unsafe_allow_html=True)
+                    _kc4.markdown(_kpi_html(_res_pcm.get("g1_total",0),"📋 Emitir Pedido","warning"), unsafe_allow_html=True)
+                    _kc5.markdown(_kpi_html(_res_pcm.get("g2_total",0),"🚨 A Contratar","danger"), unsafe_allow_html=True)
+                    _kc6.markdown(_kpi_html(_res_pcm.get("g4_total",0),"⏳ Aguardando","orange"), unsafe_allow_html=True)
+
+                    # Totais consolidados de quantidade
+                    _qtd_oc     = _res_pcm.get("qtd_total_oc", 0)
+                    _qtd_contr  = _res_pcm.get("qtd_total_contratar", 0)
+                    _tc1, _tc2, _tc3 = st.columns(3)
+                    _tc1.metric("📦 Qtd. total a pedir (Emitir OC)", f"{_qtd_oc:,.0f} un.")
+                    _tc2.metric("📝 Qtd. total a contratar", f"{_qtd_contr:,.0f} un.")
+                    _tc3.metric("📞 Follow-up em andamento", _res_pcm.get("g3_followup_total", 0))
 
                     st.markdown("<br>", unsafe_allow_html=True)
 
-                    # ── Alertas automáticos ───────────────────────────────────
+                    # Alertas
                     if _res_pcm.get("alerta_criticos_emergencia"):
                         st.markdown(f'<div class="ambar-alert-danger">🚨 EMERGÊNCIA: {_res_pcm["total_criticos"]} itens críticos — ação imediata das duas áreas!</div>', unsafe_allow_html=True)
                     if _res_pcm.get("alerta_g1_bottleneck"):
-                        st.markdown(f'<div class="ambar-alert-warning">⚠️ G1 com {_res_pcm["g1_total"]} itens — bottleneck em OCs! Revisar capacidade de emissão.</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="ambar-alert-warning">⚠️ {_res_pcm["g1_total"]} itens para emissão de OC — revisar capacidade de emissão.</div>', unsafe_allow_html=True)
                     if _res_pcm.get("alerta_g2_capacidade"):
-                        st.markdown(f'<div class="ambar-alert-danger">🚨 G2 com {_res_pcm["g2_total"]} itens — capacidade de compra insuficiente!</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="ambar-alert-danger">🚨 {_res_pcm["g2_total"]} itens sem contrato — capacidade de compras insuficiente!</div>', unsafe_allow_html=True)
 
-                    # ── Sub-abas de análise ───────────────────────────────────
+                    # ── Sub-abas ──────────────────────────────────────────────
                     _pt1, _pt2, _pt3, _pt4, _pt5, _pt6 = st.tabs([
-                        "📋 G1 — Emitir OC",
-                        "🚨 G2 — Contratar",
+                        "📋 Emitir Pedido de Compra",
+                        "🚨 Contratar",
                         "📊 Coberturas",
                         "🗂 Riscos por Dimensão",
                         "👥 Atividades por Colaborador",
                         "📥 Exportar Relatório",
                     ])
 
-                    # ── G1 ────────────────────────────────────────────────────
+                    # ── Emitir Pedido de Compra ───────────────────────────────
                     with _pt1:
-                        st.markdown('<div class="ambar-section-title">🟢 G1 — TEM CONTRATO MAS SEM PEDIDO · Responsável: PLANEJADOR</div>', unsafe_allow_html=True)
-                        _df_g1 = _df_pcm[_df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO"].copy()
+                        st.markdown('<div class="ambar-section-title">📋 Emitir Pedido de Compra · Responsável: PLANEJADOR</div>', unsafe_allow_html=True)
+                        st.caption("Itens com contrato disponível que precisam de OC emitida")
+                        _df_g1 = _df_pcm[_df_pcm["grupo_pcm"] == "G1_EMITIR_PEDIDO"].copy()
                         if not _df_g1.empty:
+                            _g1tot = _df_g1["sugestao_pedidos"].sum()
+                            st.markdown(f'<div class="ambar-alert-warning">📦 Total consolidado a pedir: <strong>{_g1tot:,.0f} unidades</strong> em {len(_df_g1)} itens</div>', unsafe_allow_html=True)
                             _g1c1, _g1c2, _g1c3 = st.columns(3)
                             _planej_g1 = sorted(_df_g1["planejador"].dropna().unique().tolist())
                             _sel_planej_g1 = _g1c1.multiselect("Planejador", _planej_g1, key="g1_plan_f")
-                            _sel_tipo_g1 = _g1c2.multiselect("Tipo Acordo", sorted(_df_g1["tipo_acordo"].unique().tolist()), key="g1_tipo_f")
-                            _sel_nivel_g1 = _g1c3.multiselect("Nível Estoque", sorted(_df_g1["nivel_estoque"].unique().tolist()), key="g1_nivel_f")
+                            _sel_tipo_g1   = _g1c2.multiselect("Tipo Acordo", sorted(_df_g1["tipo_acordo"].unique().tolist()), key="g1_tipo_f")
+                            _sel_nivel_g1  = _g1c3.multiselect("Nível Estoque", sorted(_df_g1["nivel_estoque"].unique().tolist()), key="g1_nivel_f")
 
                             _g1f = _df_g1.copy()
                             if _sel_planej_g1: _g1f = _g1f[_g1f["planejador"].isin(_sel_planej_g1)]
@@ -3877,36 +3894,47 @@ if "resultado" in st.session_state:
 
                             _cols_g1 = [c for c in ["codigo","descricao","planejador","nivel_estoque",
                                 "sugestao_pedidos","saldo_contrato","saldo_estoque","dias_cobertura",
-                                "tipo_acordo","plano_acao"] if c in _g1f.columns]
+                                "tipo_acordo","acao_sugerida","plano_acao"] if c in _g1f.columns]
                             st.dataframe(_g1f[_cols_g1].sort_values("dias_cobertura"), use_container_width=True, height=420, hide_index=True)
-                            _g1_csv = _g1f[_cols_g1].to_csv(index=False, sep=";")
-                            st.download_button("⬇ Exportar G1 (CSV)", _g1_csv, "G1_TEM_CONTRATO_SEM_PEDIDO.csv", "text/csv", use_container_width=True)
+                            st.download_button("⬇ Exportar — Emitir Pedido (CSV)", _g1f[_cols_g1].to_csv(index=False, sep=";"), "EMITIR_PEDIDO.csv", "text/csv", use_container_width=True)
                         else:
-                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item pendente em G1.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item pendente para emissão de OC.</div>', unsafe_allow_html=True)
 
-                    # ── G2 ────────────────────────────────────────────────────
+                    # ── Contratar ─────────────────────────────────────────────
                     with _pt2:
-                        st.markdown('<div class="ambar-section-title">🔴 G2 — SEM CONTRATO E SEM AÇÃO · Responsável: COMPRADOR</div>', unsafe_allow_html=True)
-                        _df_g2 = _df_pcm[_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO"].copy()
-                        if not _df_g2.empty:
-                            _g2c1, _g2c2, _g2c3 = st.columns(3)
-                            _sel_niv_g2 = _g2c1.multiselect("Nível Estoque", sorted(_df_g2["nivel_estoque"].unique().tolist()), key="g2_niv_f")
-                            _sel_prog_g2 = _g2c2.multiselect("Prog. Orçamentário", sorted(_df_g2["prog_orcamentario"].unique().tolist()), key="g2_prog_f")
-                            _sel_dep_g2  = _g2c3.multiselect("Departamento", sorted(_df_g2["departamento"].unique().tolist()), key="g2_dep_f")
+                        st.markdown('<div class="ambar-section-title">🚨 Contratar · Responsável: COMPRADOR</div>', unsafe_allow_html=True)
+                        st.caption("Itens críticos/abaixo de segurança sem contrato + itens com possível aditamento")
 
-                            _g2f = _df_g2.copy()
+                        _df_g2_tot = _df_pcm[_df_pcm["grupo_pcm"].isin(["G2_CONTRATAR"])].copy()
+                        _df_adit   = _df_pcm[_df_pcm["acao_sugerida"].str.contains("ADITAMENTO", na=False)].copy()
+
+                        if not _df_g2_tot.empty:
+                            _g2tot = _df_g2_tot["sugestao_pedidos"].sum()
+                            st.markdown(f'<div class="ambar-alert-danger">🚨 Total a contratar: <strong>{len(_df_g2_tot)} itens</strong> | Qtd. sugerida: {_g2tot:,.0f} un.</div>', unsafe_allow_html=True)
+
+                        if not _df_adit.empty:
+                            st.markdown(f'<div class="ambar-alert-warning">⚠️ Possível aditamento contratual: <strong>{len(_df_adit)} itens</strong> com contrato insuficiente</div>', unsafe_allow_html=True)
+
+                        _df_contratar = pd.concat([_df_g2_tot, _df_adit]).drop_duplicates(subset=["codigo"]) if not _df_g2_tot.empty or not _df_adit.empty else pd.DataFrame()
+
+                        if not _df_contratar.empty:
+                            _g2c1, _g2c2, _g2c3 = st.columns(3)
+                            _sel_niv_g2  = _g2c1.multiselect("Nível Estoque", sorted(_df_contratar["nivel_estoque"].unique().tolist()), key="g2_niv_f")
+                            _sel_prog_g2 = _g2c2.multiselect("Prog. Orçamentário", sorted(_df_contratar["prog_orcamentario"].unique().tolist()), key="g2_prog_f")
+                            _sel_dep_g2  = _g2c3.multiselect("Departamento", sorted(_df_contratar["departamento"].unique().tolist()), key="g2_dep_f")
+
+                            _g2f = _df_contratar.copy()
                             if _sel_niv_g2:  _g2f = _g2f[_g2f["nivel_estoque"].isin(_sel_niv_g2)]
                             if _sel_prog_g2: _g2f = _g2f[_g2f["prog_orcamentario"].isin(_sel_prog_g2)]
                             if _sel_dep_g2:  _g2f = _g2f[_g2f["departamento"].isin(_sel_dep_g2)]
 
                             _cols_g2 = [c for c in ["codigo","descricao","departamento","prog_orcamentario",
                                 "nivel_estoque","sugestao_pedidos","demanda_anual","dias_cobertura",
-                                "gap_cobertura","comprador","status_contratacao","plano_acao"] if c in _g2f.columns]
+                                "saldo_contrato","comprador","status_contratacao","acao_sugerida","plano_acao"] if c in _g2f.columns]
                             st.dataframe(_g2f[_cols_g2].sort_values("dias_cobertura"), use_container_width=True, height=420, hide_index=True)
-                            _g2_csv = _g2f[_cols_g2].to_csv(index=False, sep=";")
-                            st.download_button("⬇ Exportar G2 (CSV)", _g2_csv, "G2_SEM_CONTRATO_SEM_ACAO.csv", "text/csv", use_container_width=True)
+                            st.download_button("⬇ Exportar — Contratar (CSV)", _g2f[_cols_g2].to_csv(index=False, sep=";"), "CONTRATAR.csv", "text/csv", use_container_width=True)
                         else:
-                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item em G2 — todos os itens têm contrato ou estão em contratação.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item pendente para contratação.</div>', unsafe_allow_html=True)
 
                     # ── Coberturas ────────────────────────────────────────────
                     with _pt3:
@@ -3914,72 +3942,94 @@ if "resultado" in st.session_state:
                         _ck1, _ck2, _ck3 = st.columns(3)
                         _cobertos = _res_pcm.get("cobertos_periodo_firme", 0)
                         _nao_cob  = _res_pcm.get("nao_cobertos_periodo_firme", 0)
-                        _total_c  = _cobertos + _nao_cob
-                        _ck1.metric("✅ Cobertos no Período Firme", _cobertos, f"{_cobertos/_total_c*100:.1f}%" if _total_c else "")
-                        _ck2.metric("❌ Não Cobertos", _nao_cob, f"{_nao_cob/_total_c*100:.1f}%" if _total_c else "", delta_color="inverse")
+                        _total_c  = _cobertos + _nao_cob or 1
+                        _ck1.metric("✅ Cobertos (Período Firme)", _cobertos, f"{_cobertos/_total_c*100:.1f}%")
+                        _ck2.metric("❌ Não Cobertos", _nao_cob, f"{_nao_cob/_total_c*100:.1f}%", delta_color="inverse")
                         _ck3.metric("📞 Follow-up (pedido em aberto)", _res_pcm.get("g3_followup_total", 0))
 
-                        st.markdown("**Distribuição por Nível de Estoque:**")
                         if "nivel_estoque" in _df_pcm.columns:
+                            st.markdown("**Distribuição por Nível de Estoque:**")
                             _niv_dist = _df_pcm.groupby("nivel_estoque")["codigo"].count().reset_index()
-                            _niv_dist.columns = ["Nível", "Qtd Itens"]
-                            _niv_dist["% do Total"] = (_niv_dist["Qtd Itens"] / _niv_dist["Qtd Itens"].sum() * 100).round(1).astype(str) + "%"
+                            _niv_dist.columns = ["Nível", "Qtd"]
+                            _niv_dist["% Total"] = (_niv_dist["Qtd"] / _niv_dist["Qtd"].sum() * 100).round(1).astype(str) + "%"
                             st.dataframe(_niv_dist, use_container_width=True, hide_index=True)
 
-                        st.markdown("**Itens com demanda mas sem cobertura mínima:**")
-                        _df_sem_cob = _df_pcm[(~_df_pcm["coberto_periodo_firme"]) & (_df_pcm["tem_demanda"])].copy()
-                        if not _df_sem_cob.empty:
-                            _cols_cob = [c for c in ["codigo","descricao","nivel_estoque","dias_cobertura",
+                        st.markdown("**Itens sem cobertura do período firme:**")
+                        _df_sc = _df_pcm[(~_df_pcm["coberto_periodo_firme"]) & (_df_pcm["tem_demanda"])].copy()
+                        if not _df_sc.empty:
+                            _cols_sc = [c for c in ["codigo","descricao","nivel_estoque","dias_cobertura",
                                 "saldo_estoque","saldo_pedidos","periodo_firme","estoque_seguranca_calc",
-                                "gap_cobertura","acao_sugerida"] if c in _df_sem_cob.columns]
-                            st.dataframe(_df_sem_cob[_cols_cob].sort_values("dias_cobertura"), use_container_width=True, height=350, hide_index=True)
+                                "gap_cobertura","acao_sugerida"] if c in _df_sc.columns]
+                            st.dataframe(_df_sc[_cols_sc].sort_values("dias_cobertura"), use_container_width=True, height=350, hide_index=True)
 
                     # ── Riscos por Dimensão ───────────────────────────────────
                     with _pt4:
                         st.markdown('<div class="ambar-section-title">🗂 Riscos por Dimensão</div>', unsafe_allow_html=True)
-                        _dim_sel = st.selectbox("Agrupamento", ["prog_orcamentario", "departamento", "grupo_material"],
-                            format_func={"prog_orcamentario": "Programa Orçamentário", "departamento": "Departamento", "grupo_material": "Grupo de Material"}.get,
+                        _dim_sel = st.selectbox("Agrupamento",
+                            ["prog_orcamentario", "departamento", "grupo_material"],
+                            format_func={"prog_orcamentario": "Programa Orçamentário",
+                                         "departamento": "Departamento",
+                                         "grupo_material": "Grupo de Material"}.get,
                             key="pcm_dim_sel")
-                        _df_dim = resumo_cobertura_por_dimensao(_df_pcm, _dim_sel)
-                        if not _df_dim.empty:
-                            _dim_rename = {_dim_sel: "Dimensão","total_itens":"Total","itens_criticos":"Críticos",
-                                "itens_cobertos":"Cobertos","nao_cobertos":"Não Cobertos","pct_cobertos":"% Coberto",
-                                "g1":"G1","g2":"G2","risco":"Risco"}
-                            st.dataframe(_df_dim.rename(columns=_dim_rename), use_container_width=True, hide_index=True)
+
+                        if _dim_sel == "grupo_material":
+                            # Grupo material: só resumo de nível de estoque
+                            st.caption("Resumo de cobertura por Grupo de Material")
+                            _grp_resumo = (
+                                _df_pcm.groupby("grupo_material", as_index=False)
+                                .agg(
+                                    Total        =("codigo",           "count"),
+                                    Críticos     =("eh_critico",       "sum"),
+                                    Cobertos     =("coberto_periodo_firme","sum"),
+                                    Com_Contrato =("saldo_contrato",   lambda x: (x>0).sum()),
+                                    Com_Pedido   =("saldo_pedidos",    lambda x: (x>0).sum()),
+                                    Emitir_OC    =("grupo_pcm",        lambda x: (x=="G1_EMITIR_PEDIDO").sum()),
+                                    Contratar    =("grupo_pcm",        lambda x: (x=="G2_CONTRATAR").sum()),
+                                )
+                            )
+                            _grp_resumo["Não Cobertos"] = _grp_resumo["Total"] - _grp_resumo["Cobertos"]
+                            _grp_resumo["Sem Contrato"] = _grp_resumo["Total"] - _grp_resumo["Com_Contrato"]
+                            _grp_resumo["Sem Pedido"]   = _grp_resumo["Total"] - _grp_resumo["Com_Pedido"]
+                            st.dataframe(_grp_resumo.sort_values("Contratar", ascending=False), use_container_width=True, hide_index=True)
+                        else:
+                            _df_dim = resumo_cobertura_por_dimensao(_df_pcm, _dim_sel, _dem_detail_para_pcm if not _dem_detail_para_pcm.empty else None)
+                            if not _df_dim.empty:
+                                st.dataframe(_df_dim, use_container_width=True, hide_index=True)
 
                         st.markdown("---")
-                        st.markdown("**⚠️ Notificação: Itens que ficarão críticos SEM fornecedor disponível**")
-                        _df_risco_futuro = _df_pcm[
-                            (_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO") &
-                            (_df_pcm["dias_cobertura"] > 0) &
-                            (_df_pcm["dias_cobertura"] < 90)
+                        st.markdown("**⚠️ Itens que ficarão críticos SEM fornecedor (risco ≤ 60 dias)**")
+                        _df_rf = _df_pcm[
+                            (_df_pcm["grupo_pcm"] == "G2_CONTRATAR") &
+                            (_df_pcm["dias_cobertura"].between(1, 60))
                         ].copy()
-                        if not _df_risco_futuro.empty:
+                        if not _df_rf.empty:
                             _rf_cols = [c for c in ["codigo","descricao","nivel_estoque","dias_cobertura",
-                                "demanda_anual","prog_orcamentario","departamento","plano_acao"] if c in _df_risco_futuro.columns]
-                            st.dataframe(_df_risco_futuro[_rf_cols].sort_values("dias_cobertura"), use_container_width=True, height=350, hide_index=True)
-                            _csv_risco = _df_risco_futuro[_rf_cols].to_csv(index=False, sep=";")
-                            st.download_button("⬇ Exportar Lista de Risco Futuro", _csv_risco, "RISCO_SEM_FORNECEDOR.csv", "text/csv")
+                                "demanda_anual","prog_orcamentario","departamento","plano_acao"] if c in _df_rf.columns]
+                            st.dataframe(_df_rf[_rf_cols].sort_values("dias_cobertura"), use_container_width=True, height=300, hide_index=True)
+                            st.download_button("⬇ Exportar Risco Futuro", _df_rf[_rf_cols].to_csv(index=False, sep=";"), "RISCO_SEM_FORNECEDOR.csv", "text/csv")
                         else:
-                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item em risco futuro sem fornecedor.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item em risco iminente (≤60 dias) sem fornecedor.</div>', unsafe_allow_html=True)
 
                     # ── Atividades por Colaborador ────────────────────────────
                     with _pt5:
-                        st.markdown('<div class="ambar-section-title">👥 Lista de Atividades por Área e Colaborador</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="ambar-section-title">👥 Atividades por Área e Colaborador</div>', unsafe_allow_html=True)
                         _atividades = gerar_atividades_por_colaborador(_df_pcm)
                         if _atividades:
-                            _area_sel = st.selectbox("Selecionar Colaborador", list(_atividades.keys()), key="pcm_colab_sel")
-                            _df_ativ = _atividades[_area_sel]
-                            st.caption(f"{len(_df_ativ)} item(ns) para {_area_sel}")
+                            _area_sel = st.selectbox("Colaborador / Área", list(_atividades.keys()), key="pcm_colab_sel")
+                            _df_ativ  = _atividades[_area_sel]
+                            _tot_sug  = _df_ativ["sugestao_pedidos"].sum() if "sugestao_pedidos" in _df_ativ.columns else 0
+                            st.caption(f"{len(_df_ativ)} item(ns) · Qtd. total sugerida: {_tot_sug:,.0f} un.")
                             st.dataframe(_df_ativ, use_container_width=True, height=450, hide_index=True)
-                            _csv_ativ = _df_ativ.to_csv(index=False, sep=";")
-                            _fname_ativ = _area_sel.replace(" | ", "_").replace(" ", "_") + ".csv"
-                            st.download_button(f"⬇ Exportar lista — {_area_sel}", _csv_ativ, _fname_ativ, "text/csv")
+                            st.download_button(f"⬇ Exportar — {_area_sel}",
+                                _df_ativ.to_csv(index=False, sep=";"),
+                                _area_sel.replace(" | ","_").replace(" ","_") + ".csv",
+                                "text/csv")
 
-                            with st.expander("📋 Ver todas as áreas/colaboradores"):
+                            with st.expander("📋 Resumo de todos os colaboradores"):
                                 for _colab, _dfa in _atividades.items():
-                                    _area_icon = "🏭" if "PLANEJAMENTO" in _colab else "🛒"
-                                    st.markdown(f"**{_area_icon} {_colab}** — {len(_dfa)} iten(s)")
+                                    _icon = "🏭" if "PLANEJAMENTO" in _colab else "🛒"
+                                    _qtd = _dfa["sugestao_pedidos"].sum() if "sugestao_pedidos" in _dfa.columns else 0
+                                    st.markdown(f"**{_icon} {_colab}** — {len(_dfa)} iten(s) | {_qtd:,.0f} un.")
                         else:
                             st.info("Nenhuma atividade encontrada.")
 
@@ -3988,45 +4038,34 @@ if "resultado" in st.session_state:
                         st.markdown('<div class="ambar-section-title">📥 Exportar Relatório Completo PCM</div>', unsafe_allow_html=True)
                         try:
                             _buf_pcm = io.BytesIO()
+                            _export_cols = [c for c in _df_pcm.columns if c not in ("progs_list","depts_list")]
                             with pd.ExcelWriter(_buf_pcm, engine="openpyxl") as _wr_pcm:
-                                # Aba 1: Todos os itens analisados
-                                _df_pcm.to_excel(_wr_pcm, sheet_name="Análise Completa", index=False)
-                                # Aba 2: G1
-                                _df_g1_exp = _df_pcm[_df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO"]
-                                if not _df_g1_exp.empty:
-                                    _df_g1_exp.to_excel(_wr_pcm, sheet_name="G1_Emitir_OC", index=False)
-                                # Aba 3: G2
-                                _df_g2_exp = _df_pcm[_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO"]
-                                if not _df_g2_exp.empty:
-                                    _df_g2_exp.to_excel(_wr_pcm, sheet_name="G2_Contratar", index=False)
-                                # Aba 4: Cobertura por Programa
-                                _dim_prog = resumo_cobertura_por_dimensao(_df_pcm, "prog_orcamentario")
-                                if not _dim_prog.empty:
-                                    _dim_prog.to_excel(_wr_pcm, sheet_name="Risco_por_Programa", index=False)
-                                # Aba 5: Cobertura por Departamento
-                                _dim_dep = resumo_cobertura_por_dimensao(_df_pcm, "departamento")
-                                if not _dim_dep.empty:
-                                    _dim_dep.to_excel(_wr_pcm, sheet_name="Risco_por_Departamento", index=False)
-                                # Aba 6: Cobertura por Grupo Material
-                                _dim_grp = resumo_cobertura_por_dimensao(_df_pcm, "grupo_material")
-                                if not _dim_grp.empty:
-                                    _dim_grp.to_excel(_wr_pcm, sheet_name="Risco_por_Grupo", index=False)
-                                # Aba 7: Atividades por colaborador (todas)
-                                _ativ_exp = gerar_atividades_por_colaborador(_df_pcm)
-                                for _colab_e, _dfa_e in _ativ_exp.items():
+                                _df_pcm[_export_cols].to_excel(_wr_pcm, sheet_name="Análise Completa", index=False)
+                                _g1_exp = _df_pcm[_df_pcm["grupo_pcm"] == "G1_EMITIR_PEDIDO"][_export_cols]
+                                if not _g1_exp.empty:
+                                    _g1_exp.to_excel(_wr_pcm, sheet_name="Emitir_Pedido", index=False)
+                                _g2_exp = _df_pcm[_df_pcm["grupo_pcm"] == "G2_CONTRATAR"][_export_cols]
+                                if not _g2_exp.empty:
+                                    _g2_exp.to_excel(_wr_pcm, sheet_name="Contratar", index=False)
+                                for _ds, _sn in [("prog_orcamentario","Risco_Programa"),
+                                                  ("departamento","Risco_Departamento"),
+                                                  ("grupo_material","Risco_GrupoMaterial")]:
+                                    _dd = resumo_cobertura_por_dimensao(_df_pcm, _ds)
+                                    if not _dd.empty:
+                                        _dd.to_excel(_wr_pcm, sheet_name=_sn, index=False)
+                                for _colab_e, _dfa_e in gerar_atividades_por_colaborador(_df_pcm).items():
                                     _sname = _colab_e[:31].replace("|","_").replace("/","_")
                                     _dfa_e.to_excel(_wr_pcm, sheet_name=_sname, index=False)
-
                             st.download_button(
-                                label="⬇ Baixar Relatório Completo PCM (Excel)",
-                                data=_buf_pcm.getvalue(),
-                                file_name="PCM_RELATORIO_COMPLETO.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                "⬇ Baixar Relatório Completo (Excel)",
+                                _buf_pcm.getvalue(),
+                                "PCM_RELATORIO_COMPLETO.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 use_container_width=True,
                             )
-                            st.caption("O relatório inclui: Análise Completa | G1 | G2 | Riscos por Programa | Riscos por Departamento | Riscos por Grupo | Atividades por Colaborador")
+                            st.caption("Abas: Análise Completa | Emitir Pedido | Contratar | Risco por Programa | Risco por Departamento | Risco por Grupo | Atividades por Colaborador")
                         except ImportError:
-                            st.info("openpyxl não instalado — execute: pip install openpyxl")
+                            st.info("openpyxl não instalado.")
 
             except Exception as _e_pcm:
                 st.error(f"❌ Erro ao processar PCM: {_e_pcm}")
