@@ -40,6 +40,8 @@ from mrp import (
     ler_fornecedor_por_po,
     ler_pcm,
     resumo_pcm,
+    resumo_cobertura_por_dimensao,
+    gerar_atividades_por_colaborador,
     ARQUIVO_DEMANDA_RAW,
     DIR_DADOS,
     DIR_SAIDA,
@@ -50,13 +52,208 @@ from mrp import (
 # CONFIGURAÇÃO DA PÁGINA
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Sistema MRP",
-    page_icon="📦",
+    page_title="Âmbar Energia — MRP",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📦 Sistema MRP — Planejamento de Materiais")
+# ── CSS Âmbar Energia ─────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ─── Variáveis de cores Âmbar ──────────────────────────── */
+:root {
+    --ambar-orange:  #F7941D;
+    --ambar-dark:    #414042;
+    --ambar-gray:    #6B6B6B;
+    --ambar-light:   #F5F5F5;
+    --ambar-white:   #FFFFFF;
+    --ambar-sidebar: #2C2C2E;
+    --ambar-card:    #FFFFFF;
+    --ambar-border:  #E8E8E8;
+    --ambar-success: #2E7D32;
+    --ambar-danger:  #C62828;
+    --ambar-warning: #E65100;
+}
+
+/* ─── Sidebar ───────────────────────────────────────────── */
+[data-testid="stSidebar"] {
+    background: var(--ambar-sidebar) !important;
+    border-right: 3px solid var(--ambar-orange);
+}
+[data-testid="stSidebar"] * {
+    color: #E0E0E0 !important;
+}
+[data-testid="stSidebar"] .stSelectbox label,
+[data-testid="stSidebar"] .stFileUploader label,
+[data-testid="stSidebar"] .stCheckbox label {
+    color: #CCCCCC !important;
+    font-size: 0.82rem !important;
+}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    color: var(--ambar-orange) !important;
+    font-weight: 700 !important;
+}
+
+/* ─── Header principal ──────────────────────────────────── */
+.ambar-header {
+    background: linear-gradient(135deg, var(--ambar-dark) 0%, #1a1a1a 100%);
+    padding: 18px 28px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    border-left: 5px solid var(--ambar-orange);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+.ambar-header h1 {
+    color: var(--ambar-white) !important;
+    font-size: 1.6rem !important;
+    margin: 0 !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.5px;
+}
+.ambar-header .sub {
+    color: var(--ambar-orange) !important;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}
+
+/* ─── Cards KPI ─────────────────────────────────────────── */
+.ambar-kpi {
+    background: var(--ambar-card);
+    border-radius: 10px;
+    padding: 16px 20px;
+    border: 1px solid var(--ambar-border);
+    border-top: 4px solid var(--ambar-orange);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    text-align: center;
+    transition: transform 0.15s;
+}
+.ambar-kpi:hover { transform: translateY(-2px); }
+.ambar-kpi .kpi-value {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--ambar-dark);
+    line-height: 1;
+}
+.ambar-kpi .kpi-label {
+    font-size: 0.78rem;
+    color: var(--ambar-gray);
+    margin-top: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.ambar-kpi.danger .kpi-value { color: var(--ambar-danger); }
+.ambar-kpi.warning .kpi-value { color: var(--ambar-warning); }
+.ambar-kpi.success .kpi-value { color: var(--ambar-success); }
+.ambar-kpi.orange .kpi-value { color: var(--ambar-orange); }
+
+/* ─── Seções ────────────────────────────────────────────── */
+.ambar-section {
+    background: var(--ambar-white);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 16px 0;
+    border: 1px solid var(--ambar-border);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.ambar-section-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--ambar-dark);
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--ambar-orange);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* ─── Alertas ───────────────────────────────────────────── */
+.ambar-alert-danger {
+    background: #FFF3F3;
+    border: 1px solid #FFCDD2;
+    border-left: 4px solid var(--ambar-danger);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    color: var(--ambar-danger);
+    font-weight: 600;
+}
+.ambar-alert-warning {
+    background: #FFF8F0;
+    border: 1px solid #FFE0B2;
+    border-left: 4px solid var(--ambar-orange);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    color: #E65100;
+    font-weight: 600;
+}
+.ambar-alert-success {
+    background: #F1F8F1;
+    border: 1px solid #C8E6C9;
+    border-left: 4px solid var(--ambar-success);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    color: var(--ambar-success);
+    font-weight: 600;
+}
+
+/* ─── Tabs ──────────────────────────────────────────────── */
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+}
+[data-testid="stTabs"] [aria-selected="true"] {
+    color: var(--ambar-orange) !important;
+    border-bottom: 3px solid var(--ambar-orange) !important;
+}
+
+/* ─── Botões ────────────────────────────────────────────── */
+.stButton > button {
+    background: var(--ambar-orange) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.3px !important;
+    transition: opacity 0.15s !important;
+}
+.stButton > button:hover { opacity: 0.88 !important; }
+
+/* ─── Download button ───────────────────────────────────── */
+.stDownloadButton > button {
+    background: transparent !important;
+    color: var(--ambar-orange) !important;
+    border: 2px solid var(--ambar-orange) !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+}
+.stDownloadButton > button:hover {
+    background: var(--ambar-orange) !important;
+    color: white !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Header Âmbar ──────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="ambar-header">
+  <div>
+    <div class="sub">⚡ Âmbar Energia</div>
+    <h1>Sistema MRP — Planejamento de Materiais</h1>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
 st.caption(
     f"Horizonte: **{HORIZONTE_MESES} meses** · "
     f"SS A/B: **{MESES_COBERTURA_SS}m rolling** · "
@@ -3603,17 +3800,19 @@ if "resultado" in st.session_state:
 
     # ── Aba PCM: Análise de Materiais Críticos ────────────────────────────────
     with tab_pcm:
-        st.subheader("🎯 PCM — Planejamento de Materiais Críticos")
-        st.caption(
-            "Análise de itens críticos com duas ações: G1 (emitir OC) e G2 (iniciar contratação)"
-        )
+        st.markdown("""
+        <div class="ambar-header" style="margin-bottom:16px">
+          <div>
+            <div class="sub">⚡ Âmbar Energia — Suprimentos</div>
+            <h1>PCM — Análise de Materiais Críticos</h1>
+          </div>
+        </div>""", unsafe_allow_html=True)
 
-        # Upload PCM
         _f_pcm = st.file_uploader(
             "📂 Carregar arquivo PCM_*.xlsx",
-            type=["xlsx"],
+            type=["xlsx", "csv"],
             key="up_pcm",
-            help="Excel com sheet 'MRP' — arquivo PCM de materiais críticos"
+            help="Excel com sheet 'MRP' ou CSV separado por ponto-e-vírgula"
         )
 
         if _f_pcm is not None:
@@ -3625,178 +3824,219 @@ if "resultado" in st.session_state:
                 else:
                     _res_pcm = resumo_pcm(_df_pcm)
 
-                    # ── Métricas Resumo ────────────────────────────────────────
-                    st.markdown("### 📊 Resumo Executivo")
+                    # ── KPIs principais ───────────────────────────────────────
+                    _kpi_html = lambda val, label, cls="": f"""
+                    <div class="ambar-kpi {cls}">
+                        <div class="kpi-value">{val}</div>
+                        <div class="kpi-label">{label}</div>
+                    </div>"""
 
-                    _col1, _col2, _col3, _col4 = st.columns(4)
-                    _col1.metric("📦 Total de Itens", _res_pcm.get("total_itens", 0))
-                    _col2.metric("🔴 Críticos", _res_pcm.get("total_criticos", 0))
-                    _col3.metric("G1 (em ação)", _res_pcm.get("g1_total", 0))
-                    _col4.metric("G2 (em ação)", _res_pcm.get("g2_total", 0))
+                    _kc1, _kc2, _kc3, _kc4, _kc5, _kc6 = st.columns(6)
+                    _kc1.markdown(_kpi_html(_res_pcm.get("total_itens",0), "Total Itens"), unsafe_allow_html=True)
+                    _kc2.markdown(_kpi_html(_res_pcm.get("total_criticos",0), "🔴 Críticos", "danger"), unsafe_allow_html=True)
+                    _kc3.markdown(_kpi_html(_res_pcm.get("total_com_demanda",0), "Com Demanda", "orange"), unsafe_allow_html=True)
+                    _kc4.markdown(_kpi_html(_res_pcm.get("cobertos_periodo_firme",0), "✅ Cobertos PF", "success"), unsafe_allow_html=True)
+                    _kc5.markdown(_kpi_html(_res_pcm.get("g1_total",0), "G1 — Emitir OC", "warning"), unsafe_allow_html=True)
+                    _kc6.markdown(_kpi_html(_res_pcm.get("g2_total",0), "G2 — Contratar", "danger"), unsafe_allow_html=True)
 
-                    # ── Alertas ────────────────────────────────────────────────
-                    st.markdown("### ⚠️ Alertas")
+                    st.markdown("<br>", unsafe_allow_html=True)
 
-                    if _res_pcm["g1_total"] > 0:
-                        _g1_pct = _res_pcm.get("g1_percentual_critico", 0)
-                        st.success(
-                            f"✅ **G1 — TEM CONTRATO MAS SEM PEDIDO**  \n"
-                            f"{_res_pcm['g1_total']} itens | {_res_pcm['g1_criticos']} críticos ({_g1_pct}%)  \n"
-                            f"**Ação:** Emitir OC (Responsável: PLANEJADOR)"
-                        )
+                    # ── Alertas automáticos ───────────────────────────────────
+                    if _res_pcm.get("alerta_criticos_emergencia"):
+                        st.markdown(f'<div class="ambar-alert-danger">🚨 EMERGÊNCIA: {_res_pcm["total_criticos"]} itens críticos — ação imediata das duas áreas!</div>', unsafe_allow_html=True)
+                    if _res_pcm.get("alerta_g1_bottleneck"):
+                        st.markdown(f'<div class="ambar-alert-warning">⚠️ G1 com {_res_pcm["g1_total"]} itens — bottleneck em OCs! Revisar capacidade de emissão.</div>', unsafe_allow_html=True)
+                    if _res_pcm.get("alerta_g2_capacidade"):
+                        st.markdown(f'<div class="ambar-alert-danger">🚨 G2 com {_res_pcm["g2_total"]} itens — capacidade de compra insuficiente!</div>', unsafe_allow_html=True)
 
-                    if _res_pcm["g2_total"] > 0:
-                        _g2_pct = _res_pcm.get("g2_percentual_critico", 0)
-                        st.warning(
-                            f"🔴 **G2 — SEM CONTRATO E SEM AÇÃO**  \n"
-                            f"{_res_pcm['g2_total']} itens | {_res_pcm['g2_criticos']} críticos ({_g2_pct}%)  \n"
-                            f"**Ação:** Designar comprador e iniciar contratação (Responsável: COMPRADOR)"
-                        )
+                    # ── Sub-abas de análise ───────────────────────────────────
+                    _pt1, _pt2, _pt3, _pt4, _pt5, _pt6 = st.tabs([
+                        "📋 G1 — Emitir OC",
+                        "🚨 G2 — Contratar",
+                        "📊 Coberturas",
+                        "🗂 Riscos por Dimensão",
+                        "👥 Atividades por Colaborador",
+                        "📥 Exportar Relatório",
+                    ])
 
-                    if _res_pcm["g2_criticos"] > 50:
-                        st.error(
-                            f"🚨 **EMERGÊNCIA:** {_res_pcm['g2_criticos']} itens críticos sem contrato!  \n"
-                            f"Iniciar contratação HOJE."
-                        )
+                    # ── G1 ────────────────────────────────────────────────────
+                    with _pt1:
+                        st.markdown('<div class="ambar-section-title">🟢 G1 — TEM CONTRATO MAS SEM PEDIDO · Responsável: PLANEJADOR</div>', unsafe_allow_html=True)
+                        _df_g1 = _df_pcm[_df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO"].copy()
+                        if not _df_g1.empty:
+                            _g1c1, _g1c2, _g1c3 = st.columns(3)
+                            _planej_g1 = sorted(_df_g1["planejador"].dropna().unique().tolist())
+                            _sel_planej_g1 = _g1c1.multiselect("Planejador", _planej_g1, key="g1_plan_f")
+                            _sel_tipo_g1 = _g1c2.multiselect("Tipo Acordo", sorted(_df_g1["tipo_acordo"].unique().tolist()), key="g1_tipo_f")
+                            _sel_nivel_g1 = _g1c3.multiselect("Nível Estoque", sorted(_df_g1["nivel_estoque"].unique().tolist()), key="g1_nivel_f")
 
-                    st.divider()
+                            _g1f = _df_g1.copy()
+                            if _sel_planej_g1: _g1f = _g1f[_g1f["planejador"].isin(_sel_planej_g1)]
+                            if _sel_tipo_g1:   _g1f = _g1f[_g1f["tipo_acordo"].isin(_sel_tipo_g1)]
+                            if _sel_nivel_g1:  _g1f = _g1f[_g1f["nivel_estoque"].isin(_sel_nivel_g1)]
 
-                    # ── G1: TEM CONTRATO MAS SEM PEDIDO ──────────────────────
-                    st.markdown("### 🟢 G1 — TEM CONTRATO MAS SEM PEDIDO")
-                    st.caption("Emitir OC · Responsável: PLANEJADOR")
+                            _cols_g1 = [c for c in ["codigo","descricao","planejador","nivel_estoque",
+                                "sugestao_pedidos","saldo_contrato","saldo_estoque","dias_cobertura",
+                                "tipo_acordo","plano_acao"] if c in _g1f.columns]
+                            st.dataframe(_g1f[_cols_g1].sort_values("dias_cobertura"), use_container_width=True, height=420, hide_index=True)
+                            _g1_csv = _g1f[_cols_g1].to_csv(index=False, sep=";")
+                            st.download_button("⬇ Exportar G1 (CSV)", _g1_csv, "G1_TEM_CONTRATO_SEM_PEDIDO.csv", "text/csv", use_container_width=True)
+                        else:
+                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item pendente em G1.</div>', unsafe_allow_html=True)
 
-                    _df_g1 = _df_pcm[_df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO"].copy()
+                    # ── G2 ────────────────────────────────────────────────────
+                    with _pt2:
+                        st.markdown('<div class="ambar-section-title">🔴 G2 — SEM CONTRATO E SEM AÇÃO · Responsável: COMPRADOR</div>', unsafe_allow_html=True)
+                        _df_g2 = _df_pcm[_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO"].copy()
+                        if not _df_g2.empty:
+                            _g2c1, _g2c2, _g2c3 = st.columns(3)
+                            _sel_niv_g2 = _g2c1.multiselect("Nível Estoque", sorted(_df_g2["nivel_estoque"].unique().tolist()), key="g2_niv_f")
+                            _sel_prog_g2 = _g2c2.multiselect("Prog. Orçamentário", sorted(_df_g2["prog_orcamentario"].unique().tolist()), key="g2_prog_f")
+                            _sel_dep_g2  = _g2c3.multiselect("Departamento", sorted(_df_g2["departamento"].unique().tolist()), key="g2_dep_f")
 
-                    if not _df_g1.empty:
-                        # Filtros
-                        _col_f1, _col_f2 = st.columns(2)
-                        with _col_f1:
-                            _planej_uniq = sorted(_df_g1["planejador"].unique().tolist())
-                            _sel_planej = st.multiselect(
-                                "Filtrar por Planejador",
-                                _planej_uniq,
-                                key="g1_planej_filter"
+                            _g2f = _df_g2.copy()
+                            if _sel_niv_g2:  _g2f = _g2f[_g2f["nivel_estoque"].isin(_sel_niv_g2)]
+                            if _sel_prog_g2: _g2f = _g2f[_g2f["prog_orcamentario"].isin(_sel_prog_g2)]
+                            if _sel_dep_g2:  _g2f = _g2f[_g2f["departamento"].isin(_sel_dep_g2)]
+
+                            _cols_g2 = [c for c in ["codigo","descricao","departamento","prog_orcamentario",
+                                "nivel_estoque","sugestao_pedidos","demanda_anual","dias_cobertura",
+                                "gap_cobertura","comprador","status_contratacao","plano_acao"] if c in _g2f.columns]
+                            st.dataframe(_g2f[_cols_g2].sort_values("dias_cobertura"), use_container_width=True, height=420, hide_index=True)
+                            _g2_csv = _g2f[_cols_g2].to_csv(index=False, sep=";")
+                            st.download_button("⬇ Exportar G2 (CSV)", _g2_csv, "G2_SEM_CONTRATO_SEM_ACAO.csv", "text/csv", use_container_width=True)
+                        else:
+                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item em G2 — todos os itens têm contrato ou estão em contratação.</div>', unsafe_allow_html=True)
+
+                    # ── Coberturas ────────────────────────────────────────────
+                    with _pt3:
+                        st.markdown('<div class="ambar-section-title">📊 Análise de Cobertura — Período Firme vs. Estoque de Segurança</div>', unsafe_allow_html=True)
+                        _ck1, _ck2, _ck3 = st.columns(3)
+                        _cobertos = _res_pcm.get("cobertos_periodo_firme", 0)
+                        _nao_cob  = _res_pcm.get("nao_cobertos_periodo_firme", 0)
+                        _total_c  = _cobertos + _nao_cob
+                        _ck1.metric("✅ Cobertos no Período Firme", _cobertos, f"{_cobertos/_total_c*100:.1f}%" if _total_c else "")
+                        _ck2.metric("❌ Não Cobertos", _nao_cob, f"{_nao_cob/_total_c*100:.1f}%" if _total_c else "", delta_color="inverse")
+                        _ck3.metric("📞 Follow-up (pedido em aberto)", _res_pcm.get("g3_followup_total", 0))
+
+                        st.markdown("**Distribuição por Nível de Estoque:**")
+                        if "nivel_estoque" in _df_pcm.columns:
+                            _niv_dist = _df_pcm.groupby("nivel_estoque")["codigo"].count().reset_index()
+                            _niv_dist.columns = ["Nível", "Qtd Itens"]
+                            _niv_dist["% do Total"] = (_niv_dist["Qtd Itens"] / _niv_dist["Qtd Itens"].sum() * 100).round(1).astype(str) + "%"
+                            st.dataframe(_niv_dist, use_container_width=True, hide_index=True)
+
+                        st.markdown("**Itens com demanda mas sem cobertura mínima:**")
+                        _df_sem_cob = _df_pcm[(~_df_pcm["coberto_periodo_firme"]) & (_df_pcm["tem_demanda"])].copy()
+                        if not _df_sem_cob.empty:
+                            _cols_cob = [c for c in ["codigo","descricao","nivel_estoque","dias_cobertura",
+                                "saldo_estoque","saldo_pedidos","periodo_firme","estoque_seguranca_calc",
+                                "gap_cobertura","acao_sugerida"] if c in _df_sem_cob.columns]
+                            st.dataframe(_df_sem_cob[_cols_cob].sort_values("dias_cobertura"), use_container_width=True, height=350, hide_index=True)
+
+                    # ── Riscos por Dimensão ───────────────────────────────────
+                    with _pt4:
+                        st.markdown('<div class="ambar-section-title">🗂 Riscos por Dimensão</div>', unsafe_allow_html=True)
+                        _dim_sel = st.selectbox("Agrupamento", ["prog_orcamentario", "departamento", "grupo_material"],
+                            format_func={"prog_orcamentario": "Programa Orçamentário", "departamento": "Departamento", "grupo_material": "Grupo de Material"}.get,
+                            key="pcm_dim_sel")
+                        _df_dim = resumo_cobertura_por_dimensao(_df_pcm, _dim_sel)
+                        if not _df_dim.empty:
+                            _dim_rename = {_dim_sel: "Dimensão","total_itens":"Total","itens_criticos":"Críticos",
+                                "itens_cobertos":"Cobertos","nao_cobertos":"Não Cobertos","pct_cobertos":"% Coberto",
+                                "g1":"G1","g2":"G2","risco":"Risco"}
+                            st.dataframe(_df_dim.rename(columns=_dim_rename), use_container_width=True, hide_index=True)
+
+                        st.markdown("---")
+                        st.markdown("**⚠️ Notificação: Itens que ficarão críticos SEM fornecedor disponível**")
+                        _df_risco_futuro = _df_pcm[
+                            (_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO") &
+                            (_df_pcm["dias_cobertura"] > 0) &
+                            (_df_pcm["dias_cobertura"] < 90)
+                        ].copy()
+                        if not _df_risco_futuro.empty:
+                            _rf_cols = [c for c in ["codigo","descricao","nivel_estoque","dias_cobertura",
+                                "demanda_anual","prog_orcamentario","departamento","plano_acao"] if c in _df_risco_futuro.columns]
+                            st.dataframe(_df_risco_futuro[_rf_cols].sort_values("dias_cobertura"), use_container_width=True, height=350, hide_index=True)
+                            _csv_risco = _df_risco_futuro[_rf_cols].to_csv(index=False, sep=";")
+                            st.download_button("⬇ Exportar Lista de Risco Futuro", _csv_risco, "RISCO_SEM_FORNECEDOR.csv", "text/csv")
+                        else:
+                            st.markdown('<div class="ambar-alert-success">✅ Nenhum item em risco futuro sem fornecedor.</div>', unsafe_allow_html=True)
+
+                    # ── Atividades por Colaborador ────────────────────────────
+                    with _pt5:
+                        st.markdown('<div class="ambar-section-title">👥 Lista de Atividades por Área e Colaborador</div>', unsafe_allow_html=True)
+                        _atividades = gerar_atividades_por_colaborador(_df_pcm)
+                        if _atividades:
+                            _area_sel = st.selectbox("Selecionar Colaborador", list(_atividades.keys()), key="pcm_colab_sel")
+                            _df_ativ = _atividades[_area_sel]
+                            st.caption(f"{len(_df_ativ)} item(ns) para {_area_sel}")
+                            st.dataframe(_df_ativ, use_container_width=True, height=450, hide_index=True)
+                            _csv_ativ = _df_ativ.to_csv(index=False, sep=";")
+                            _fname_ativ = _area_sel.replace(" | ", "_").replace(" ", "_") + ".csv"
+                            st.download_button(f"⬇ Exportar lista — {_area_sel}", _csv_ativ, _fname_ativ, "text/csv")
+
+                            with st.expander("📋 Ver todas as áreas/colaboradores"):
+                                for _colab, _dfa in _atividades.items():
+                                    _area_icon = "🏭" if "PLANEJAMENTO" in _colab else "🛒"
+                                    st.markdown(f"**{_area_icon} {_colab}** — {len(_dfa)} iten(s)")
+                        else:
+                            st.info("Nenhuma atividade encontrada.")
+
+                    # ── Exportação completa ───────────────────────────────────
+                    with _pt6:
+                        st.markdown('<div class="ambar-section-title">📥 Exportar Relatório Completo PCM</div>', unsafe_allow_html=True)
+                        try:
+                            _buf_pcm = io.BytesIO()
+                            with pd.ExcelWriter(_buf_pcm, engine="openpyxl") as _wr_pcm:
+                                # Aba 1: Todos os itens analisados
+                                _df_pcm.to_excel(_wr_pcm, sheet_name="Análise Completa", index=False)
+                                # Aba 2: G1
+                                _df_g1_exp = _df_pcm[_df_pcm["grupo_pcm"] == "G1_TEM_CONTRATO_SEM_PEDIDO"]
+                                if not _df_g1_exp.empty:
+                                    _df_g1_exp.to_excel(_wr_pcm, sheet_name="G1_Emitir_OC", index=False)
+                                # Aba 3: G2
+                                _df_g2_exp = _df_pcm[_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO"]
+                                if not _df_g2_exp.empty:
+                                    _df_g2_exp.to_excel(_wr_pcm, sheet_name="G2_Contratar", index=False)
+                                # Aba 4: Cobertura por Programa
+                                _dim_prog = resumo_cobertura_por_dimensao(_df_pcm, "prog_orcamentario")
+                                if not _dim_prog.empty:
+                                    _dim_prog.to_excel(_wr_pcm, sheet_name="Risco_por_Programa", index=False)
+                                # Aba 5: Cobertura por Departamento
+                                _dim_dep = resumo_cobertura_por_dimensao(_df_pcm, "departamento")
+                                if not _dim_dep.empty:
+                                    _dim_dep.to_excel(_wr_pcm, sheet_name="Risco_por_Departamento", index=False)
+                                # Aba 6: Cobertura por Grupo Material
+                                _dim_grp = resumo_cobertura_por_dimensao(_df_pcm, "grupo_material")
+                                if not _dim_grp.empty:
+                                    _dim_grp.to_excel(_wr_pcm, sheet_name="Risco_por_Grupo", index=False)
+                                # Aba 7: Atividades por colaborador (todas)
+                                _ativ_exp = gerar_atividades_por_colaborador(_df_pcm)
+                                for _colab_e, _dfa_e in _ativ_exp.items():
+                                    _sname = _colab_e[:31].replace("|","_").replace("/","_")
+                                    _dfa_e.to_excel(_wr_pcm, sheet_name=_sname, index=False)
+
+                            st.download_button(
+                                label="⬇ Baixar Relatório Completo PCM (Excel)",
+                                data=_buf_pcm.getvalue(),
+                                file_name="PCM_RELATORIO_COMPLETO.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
                             )
-                        with _col_f2:
-                            _tipo_acordo_uniq = sorted(_df_g1["tipo_acordo"].unique().tolist())
-                            _sel_tipo = st.multiselect(
-                                "Filtrar por Tipo de Acordo",
-                                _tipo_acordo_uniq,
-                                key="g1_tipo_filter"
-                            )
-
-                        # Aplicar filtros
-                        _df_g1_fil = _df_g1.copy()
-                        if _sel_planej:
-                            _df_g1_fil = _df_g1_fil[_df_g1_fil["planejador"].isin(_sel_planej)]
-                        if _sel_tipo:
-                            _df_g1_fil = _df_g1_fil[_df_g1_fil["tipo_acordo"].isin(_sel_tipo)]
-
-                        # Tabela
-                        _cols_g1 = [
-                            "codigo", "descricao", "planejador", "sugestao_pedidos",
-                            "saldo_contrato", "tipo_acordo", "nivel_estoque"
-                        ]
-                        _cols_g1 = [c for c in _cols_g1 if c in _df_g1_fil.columns]
-
-                        st.dataframe(
-                            _df_g1_fil[_cols_g1].sort_values("sugestao_pedidos", ascending=False),
-                            use_container_width=True,
-                            height=400,
-                            hide_index=True
-                        )
-
-                        # Download G1 CSV
-                        _csv_g1 = _df_g1_fil[_cols_g1].to_csv(index=False)
-                        st.download_button(
-                            label="⬇ Exportar G1 (CSV)",
-                            data=_csv_g1,
-                            file_name="G1_TEM_CONTRATO_SEM_PEDIDO.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    else:
-                        st.success("✅ Nenhum item em G1 no momento.")
-
-                    st.divider()
-
-                    # ── G2: SEM CONTRATO E SEM AÇÃO ──────────────────────────
-                    st.markdown("### 🔴 G2 — SEM CONTRATO E SEM AÇÃO")
-                    st.caption("Designar comprador e iniciar contratação · Responsável: COMPRADOR")
-
-                    _df_g2 = _df_pcm[_df_pcm["grupo_pcm"] == "G2_SEM_CONTRATO_SEM_ACAO"].copy()
-
-                    if not _df_g2.empty:
-                        # Filtros
-                        _col_f3, _col_f4 = st.columns(2)
-                        with _col_f3:
-                            _nivel_uniq = sorted(_df_g2["nivel_estoque"].unique().tolist())
-                            _sel_nivel = st.multiselect(
-                                "Filtrar por Nível",
-                                _nivel_uniq,
-                                key="g2_nivel_filter"
-                            )
-                        with _col_f4:
-                            _demanda_faixa = st.slider(
-                                "Filtrar por Demanda Anual (mín.)",
-                                0,
-                                int(_df_g2["demanda_anual"].max() or 1000),
-                                key="g2_demanda_filter"
-                            )
-
-                        # Aplicar filtros
-                        _df_g2_fil = _df_g2.copy()
-                        if _sel_nivel:
-                            _df_g2_fil = _df_g2_fil[_df_g2_fil["nivel_estoque"].isin(_sel_nivel)]
-                        _df_g2_fil = _df_g2_fil[_df_g2_fil["demanda_anual"] >= _demanda_faixa]
-
-                        # Tabela
-                        _cols_g2 = [
-                            "codigo", "descricao", "sugestao_pedidos",
-                            "demanda_anual", "comprador", "status_contratacao", "nivel_estoque"
-                        ]
-                        _cols_g2 = [c for c in _cols_g2 if c in _df_g2_fil.columns]
-
-                        st.dataframe(
-                            _df_g2_fil[_cols_g2].sort_values("sugestao_pedidos", ascending=False),
-                            use_container_width=True,
-                            height=400,
-                            hide_index=True
-                        )
-
-                        # Download G2 CSV
-                        _csv_g2 = _df_g2_fil[_cols_g2].to_csv(index=False)
-                        st.download_button(
-                            label="⬇ Exportar G2 (CSV)",
-                            data=_csv_g2,
-                            file_name="G2_SEM_CONTRATO_SEM_ACAO.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    else:
-                        st.success("✅ Nenhum item em G2 no momento.")
-
-                    st.divider()
-
-                    # ── Grupos Excluídos ───────────────────────────────────────
-                    st.markdown("### ℹ️ Grupos Excluídos (em acompanhamento)")
-
-                    _df_g3 = _df_pcm[_df_pcm["grupo_pcm"] == "G3_TEM_CONTRATO_E_PEDIDO"]
-                    _df_g4 = _df_pcm[_df_pcm["grupo_pcm"] == "G4_SEM_CONTRATO_EM_ACAO"]
-
-                    _col_g3, _col_g4 = st.columns(2)
-                    with _col_g3:
-                        st.metric("G3 (em andamento)", len(_df_g3))
-                        st.caption("TEM CONTRATO E JÁ TEM PEDIDO — Acompanhar recebimento")
-                    with _col_g4:
-                        st.metric("G4 (em andamento)", len(_df_g4))
-                        st.caption("SEM CONTRATO MAS EM CONTRATAÇÃO — Acompanhar negociação")
+                            st.caption("O relatório inclui: Análise Completa | G1 | G2 | Riscos por Programa | Riscos por Departamento | Riscos por Grupo | Atividades por Colaborador")
+                        except ImportError:
+                            st.info("openpyxl não instalado — execute: pip install openpyxl")
 
             except Exception as _e_pcm:
                 st.error(f"❌ Erro ao processar PCM: {_e_pcm}")
                 st.exception(_e_pcm)
         else:
-            st.info("ℹ️ Carregue um arquivo PCM_*.xlsx para começar a análise.")
+            st.markdown("""
+            <div class="ambar-alert-warning">
+            📂 Carregue um arquivo <strong>PCM_*.xlsx</strong> (com aba MRP) para iniciar a análise.<br>
+            <small>Formato: Excel exportado do SAP com 33 colunas conforme layout PCM.</small>
+            </div>""", unsafe_allow_html=True)
 
 
 else:
