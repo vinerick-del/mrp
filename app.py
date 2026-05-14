@@ -408,75 +408,19 @@ def _caption_arquivo(chave: str):
 
 
 with st.sidebar:
-    st.header("📂 Arquivos de Entrada")
-    st.caption("Arquivos importados são **salvos automaticamente**. "
-               "Na próxima abertura o app carrega os dados da última importação.")
-
-    f_demanda   = st.file_uploader(_label_upload("①","Demanda (DTM)","demanda"),
-                                   type=["csv","txt"], key="up_demanda",
-                                   help="demanda_dtm_raw.csv — separado por ';'")
-    _caption_arquivo("demanda")
-
-    f_remessas  = st.file_uploader(_label_upload("②","Remessas SAP","remessas"),
-                                   type=["csv","txt"], key="up_remessas",
-                                   help="ME2M/ME9F — lookup de datas e nºs de documento")
-    _caption_arquivo("remessas")
-
-    f_pedidos   = st.file_uploader(_label_upload("③","Pedidos em Aberto","pedidos"),
-                                   type=["csv","txt"], key="up_pedidos",
-                                   help="pedidos_abertos.csv — base principal de qtd/valores")
-    _caption_arquivo("pedidos")
-
-    f_estoque   = st.file_uploader(_label_upload("④","Estoque SAP","estoque"),
-                                   type=["csv","txt"], key="up_estoque",
-                                   help="MB52/MMBE — separado por TAB")
-    _caption_arquivo("estoque")
-
-    f_contratos = st.file_uploader(_label_upload("⑤","Contratos SAP","contratos"),
-                                   type=["csv","txt"], key="up_contratos",
-                                   help="ME3M/ME3N — separado por TAB")
-    _caption_arquivo("contratos")
-
-    f_materiais = st.file_uploader(_label_upload("⑥","Materiais (catálogo)","materiais"),
-                                   type=["csv","txt"], key="up_materiais",
-                                   help="MM60/MM03 — CÓDIGO | DESCRIÇÃO | VALOR UNITÁRIO")
-    _caption_arquivo("materiais")
-
-    f_lead      = st.file_uploader(_label_upload("⑦","Lead Times","lead"),
-                                   type=["csv"], key="up_lead",
-                                   help="CSV: material,lead_time_dias")
-    _caption_arquivo("lead")
-
-    f_mb51      = st.file_uploader(_label_upload("⑧","Histórico MB51","mb51"),
-                                   type=["csv","txt"], key="up_mb51",
-                                   help="MB51 — movimentos 101/102")
-    _caption_arquivo("mb51")
-
-    f_politica  = st.file_uploader(_label_upload("⑨","Política de Pagamento","politica"),
-                                   type=["csv","txt"], key="up_politica",
-                                   help="CSV: documento | dias_parcela_1 | dias_parcela_2 ...")
-    _caption_arquivo("politica")
-
-    f_pcm = st.file_uploader(
-        _label_upload("⑩", "PCM — Materiais Críticos", "pcm"),
-        type=["xlsx"],
-        key="up_pcm",
-        help="Arquivo PCM_*.xlsx exportado do sistema de gestão de materiais críticos",
-    )
-    _caption_arquivo("pcm")
-
-    st.divider()
+    st.header("🚀 MRP — Processamento")
     btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
     if _tem_dados_minimos():
-        st.caption("Dados disponíveis — processamento automático ativo.")
+        st.caption("✅ Dados carregados — processamento automático ativo.")
+
+    st.divider()
+    st.markdown("**📂 Arquivos de Entrada**  \nConfigure e importe seus arquivos na aba de *Importação*.")
 
     if st.button("🔄 Forçar Recarregamento (Limpar Cache)", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
     st.divider()
-    st.caption("**Fluxo:** Arquivos SAP → Normalização → Motor MRP → Dashboard + Excel")
-
     # Indicador de rateio manual configurado
     _rm_sidebar = _carregar_rateio_manual()
     if not _rm_sidebar.empty and "material" in _rm_sidebar.columns:
@@ -484,30 +428,87 @@ with st.sidebar:
         if _n_rm > 0:
             st.info(f"🔧 Rateio manual: **{_n_rm}** material(is) → aba ⚠️ Rateio Pendente")
 
+    st.caption("**Fluxo:** Arquivos → Importação → Processamento → Dashboard")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SALVAR NOVOS UPLOADS IMEDIATAMENTE (antes do processamento)
+# DEFINIÇÕES DE ARQUIVO PARA IMPORTAÇÃO
 # ─────────────────────────────────────────────────────────────────────────────
-_uploads = {
-    "demanda"  : f_demanda,
-    "remessas" : f_remessas,
-    "pedidos"  : f_pedidos,
-    "estoque"  : f_estoque,
-    "contratos": f_contratos,
-    "materiais": f_materiais,
-    "lead"     : f_lead,
-    "mb51"     : f_mb51,
-    "politica" : f_politica,
-    "pcm"      : f_pcm,
-}
-_novos_uploads = [k for k, v in _uploads.items() if v is not None]
-if _novos_uploads:
-    for chave, uploaded in _uploads.items():
-        if uploaded:
-            _salvar_upload(uploaded, chave)
-    # Forçar reprocessamento quando novos arquivos chegarem
-    st.session_state.pop("resultado", None)
-    st.session_state.pop("_auto_processado", None)
+_file_defs = [
+    ("demanda",   "①", "Demanda (DTM)",                  ["csv","txt"], "demanda_dtm_raw.csv — separado por ';'"),
+    ("remessas",  "②", "Remessas SAP",                   ["csv","txt"], "ME2M/ME9F — lookup de datas e nºs de documento"),
+    ("pedidos",   "③", "Pedidos em Aberto",              ["csv","txt"], "pedidos_abertos.csv — base principal"),
+    ("estoque",   "④", "Estoque SAP",                    ["csv","txt"], "MB52/MMBE — separado por TAB"),
+    ("contratos", "⑤", "Contratos SAP",                  ["csv","txt"], "ME3M/ME3N — separado por TAB"),
+    ("materiais", "⑥", "Materiais (catálogo)",           ["csv","txt"], "MM60/MM03 — CÓDIGO | DESCRIÇÃO | VALOR"),
+    ("lead",      "⑦", "Lead Times",                     ["csv"],       "CSV: material,lead_time_dias"),
+    ("mb51",      "⑧", "Histórico MB51",                 ["csv","txt"], "MB51 — movimentos 101/102"),
+    ("politica",  "⑨", "Política de Pagamento",          ["csv","txt"], "CSV: documento | dias_parcela_1 | ..."),
+    ("pcm",       "⑩", "PCM — Materiais Críticos",       ["xlsx"],      "Arquivo PCM_*.xlsx do sistema de materiais críticos"),
+]
+
+# Criar file_uploader para cada arquivo (será usado em Importação)
+_file_uploaders = {}
+for chave, numero, descricao, tipos, ajuda in _file_defs:
+    _file_uploaders[chave] = None  # Será preenchido na aba de Importação
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ABA DE IMPORTAÇÃO DE ARQUIVOS (primeira aba antes do dashboard)
+# ─────────────────────────────────────────────────────────────────────────────
+# Flag para detectar se estamos na aba de importação
+_em_importacao = st.session_state.get("_em_importacao", True) if "resultado" not in st.session_state else False
+
+if "resultado" not in st.session_state:
+    # Mostrar aba de importação quando não há dados processados
+    st.markdown("## 📂 Importação de Arquivos")
+    st.info(
+        "👇 Selecione e carregue seus arquivos SAP abaixo. Os arquivos são salvos automaticamente. "
+        "Na próxima abertura, o app carrega os dados da última importação."
+    )
+
+    cols_upload = st.columns(2)
+    for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
+        col = cols_upload[idx % 2]
+        with col:
+            _file_uploaders[chave] = st.file_uploader(
+                _label_upload(numero, descricao, chave),
+                type=tipos,
+                key=f"up_{chave}",
+                help=ajuda,
+            )
+            _caption_arquivo(chave)
+
+    st.divider()
+    st.subheader("📋 Formato esperado de cada arquivo")
+    with st.expander("Ver especificações"):
+        st.markdown("""
+| # | Arquivo | Separador | Colunas-chave |
+|---|---------|-----------|---|
+| ① | Demanda DTM | `;` | CÓDIGO, MÊS, DEP., PROJETO, QTD |
+| ② | Remessas SAP | `TAB` | Material, Data de remessa, a ser fornecida (quantidade) |
+| ③ | Pedidos em Aberto | `TAB` ou `;` | Material, Quantidade, Valor total |
+| ④ | Estoque SAP | `TAB` | Produto, Qtd.disponível |
+| ⑤ | Contratos SAP | `TAB` | Material, Fim da validade, Qtd.prev.pendente, Preço líquido |
+| ⑥ | Materiais | `;` ou `TAB` | CÓDIGO, DESCRIÇÃO, VALOR UNITÁRIO |
+| ⑦ | Lead Times | `,` | material, lead_time_dias |
+| ⑧ | Histórico MB51 | `TAB` | Material, Data, Quantidade |
+| ⑨ | Política de Pagamento | `;` | documento, dias_parcela_1, dias_parcela_2 ... |
+| ⑩ | PCM — Materiais Críticos | XLSX | Definido no sistema |
+
+**Números em formato brasileiro:** `3.515,50` = 3515.50
+**Datas:** `dd/mm/yyyy`
+        """)
+
+    # Processar uploads
+    _novos_uploads = [k for k, v in _file_uploaders.items() if v is not None]
+    if _novos_uploads:
+        for chave, uploaded in _file_uploaders.items():
+            if uploaded:
+                _salvar_upload(uploaded, chave)
+        # Forçar reprocessamento quando novos arquivos chegarem
+        st.session_state.pop("resultado", None)
+        st.session_state.pop("_auto_processado", None)
+        st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROCESSAMENTO — disparado pelo botão OU automaticamente na primeira sessão
