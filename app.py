@@ -408,51 +408,66 @@ def _caption_arquivo(chave: str):
 
 
 with st.sidebar:
-    st.header("🚀 MRP — Processamento")
+    st.header("🚀 MRP")
     btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
     if _tem_dados_minimos():
-        st.caption("✅ Dados carregados — processamento automático ativo.")
+        st.caption("✅ Dados carregados.")
 
     st.divider()
 
-    # ── Menu de navegação vertical ────────────────────────────────────────────
-    if "resultado" in st.session_state:
-        _menu_opcoes = [
-            "📅 Projeção de Estoque",
-            "💰 Financeiro",
-            "📋 Saldo de Contrato",
-            "📂 Rateio",
-            "⚠️ Rateio Pendente",
-            "📊 Rateio DFP - Realizado",
-            "🎯 PCM — Materiais Críticos",
-        ]
-        _pagina = st.radio(
-            "Navegação",
-            _menu_opcoes,
-            label_visibility="collapsed",
-        )
-        st.divider()
-    else:
-        _pagina = "📂 Importação de Arquivos"
+    # ── Menu de navegação com seções colapsáveis ──────────────────────────────
+    _pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
 
-    # Botão de importação de arquivos (sempre acessível)
-    if st.button("📂 Importação de Arquivos", use_container_width=True):
-        st.session_state["_pagina_importacao"] = True
-        st.rerun()
+    def _nav_btn(label: str, icon: str = ""):
+        """Botão de navegação — retorna True se clicado."""
+        _txt = f"{icon} {label}".strip() if icon else label
+        _ativo = _pagina == _txt
+        if st.button(_txt, use_container_width=True,
+                     type="primary" if _ativo else "secondary"):
+            st.session_state["_pagina_atual"] = _txt
+            st.session_state.pop("_pagina_importacao", None)
+            st.rerun()
+
+    if "resultado" in st.session_state:
+        # Seção: Análise
+        with st.expander("📊 Análise", expanded=True):
+            _nav_btn("📅 Projeção de Estoque")
+            _nav_btn("💰 Financeiro")
+
+        # Seção: Contratos
+        with st.expander("📋 Contratos", expanded=False):
+            _nav_btn("📋 Saldo de Contrato")
+
+        # Seção: Rateio
+        with st.expander("📂 Rateio", expanded=False):
+            _nav_btn("📂 Rateio")
+            _nav_btn("⚠️ Rateio Pendente")
+            _nav_btn("📊 Rateio DFP - Realizado")
+
+        # Seção: PCM
+        with st.expander("🎯 PCM", expanded=False):
+            _nav_btn("🎯 PCM — Materiais Críticos")
+
+        st.divider()
+
+    # Importação (sempre acessível, fora das seções)
+    _nav_btn("📂 Importação de Arquivos")
 
     if st.button("🔄 Limpar Cache", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
-    # Indicador de rateio manual configurado
+    st.divider()
     _rm_sidebar = _carregar_rateio_manual()
     if not _rm_sidebar.empty and "material" in _rm_sidebar.columns:
         _n_rm = _rm_sidebar["material"].nunique()
         if _n_rm > 0:
             st.info(f"🔧 Rateio manual: **{_n_rm}** material(is)")
 
-# Sobrescrever _pagina se botão de importação foi clicado
-if st.session_state.get("_pagina_importacao"):
+# Página atual
+_pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
+# Se não há resultado, forçar importação
+if "resultado" not in st.session_state:
     _pagina = "📂 Importação de Arquivos"
 
 # ─────────────────────────────────────────────────────────────────────────────
