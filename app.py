@@ -415,42 +415,32 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Menu de navegação com seções colapsáveis ──────────────────────────────
+    # ── Menu de navegação — sempre visível ────────────────────────────────────
     _pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
 
-    def _nav_btn(label: str, icon: str = ""):
-        """Botão de navegação — retorna True se clicado."""
-        _txt = f"{icon} {label}".strip() if icon else label
-        _ativo = _pagina == _txt
-        if st.button(_txt, use_container_width=True,
+    def _nav_btn(label: str):
+        _ativo = _pagina == label
+        if st.button(label, use_container_width=True,
                      type="primary" if _ativo else "secondary"):
-            st.session_state["_pagina_atual"] = _txt
-            st.session_state.pop("_pagina_importacao", None)
+            st.session_state["_pagina_atual"] = label
             st.rerun()
 
-    if "resultado" in st.session_state:
-        # Seção: Análise
-        with st.expander("📊 Análise", expanded=True):
-            _nav_btn("📅 Projeção de Estoque")
-            _nav_btn("💰 Financeiro")
+    with st.expander("📊 Análise", expanded=True):
+        _nav_btn("📅 Projeção de Estoque")
+        _nav_btn("💰 Financeiro")
 
-        # Seção: Contratos
-        with st.expander("📋 Contratos", expanded=False):
-            _nav_btn("📋 Saldo de Contrato")
+    with st.expander("📋 Contratos", expanded=True):
+        _nav_btn("📋 Saldo de Contrato")
 
-        # Seção: Rateio
-        with st.expander("📂 Rateio", expanded=False):
-            _nav_btn("📂 Rateio")
-            _nav_btn("⚠️ Rateio Pendente")
-            _nav_btn("📊 Rateio DFP - Realizado")
+    with st.expander("📂 Rateio", expanded=True):
+        _nav_btn("📂 Rateio")
+        _nav_btn("⚠️ Rateio Pendente")
+        _nav_btn("📊 Rateio DFP - Realizado")
 
-        # Seção: PCM
-        with st.expander("🎯 PCM", expanded=False):
-            _nav_btn("🎯 PCM — Materiais Críticos")
+    with st.expander("🎯 PCM", expanded=True):
+        _nav_btn("🎯 PCM — Materiais Críticos")
 
-        st.divider()
-
-    # Importação (sempre acessível, fora das seções)
+    st.divider()
     _nav_btn("📂 Importação de Arquivos")
 
     if st.button("🔄 Limpar Cache", use_container_width=True):
@@ -466,9 +456,6 @@ with st.sidebar:
 
 # Página atual
 _pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
-# Se não há resultado, forçar importação
-if "resultado" not in st.session_state:
-    _pagina = "📂 Importação de Arquivos"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DEFINIÇÕES DE ARQUIVO PARA IMPORTAÇÃO
@@ -887,8 +874,19 @@ if _disparar:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DASHBOARD — exibido após processamento
+# CONTEÚDO PRINCIPAL — roteado pela página selecionada no menu
 # ─────────────────────────────────────────────────────────────────────────────
+_paginas_dashboard = {
+    "📅 Projeção de Estoque", "💰 Financeiro", "📋 Saldo de Contrato",
+    "📂 Rateio", "⚠️ Rateio Pendente", "📊 Rateio DFP - Realizado",
+    "🎯 PCM — Materiais Críticos",
+}
+
+if _pagina in _paginas_dashboard and "resultado" not in st.session_state:
+    st.title(_pagina)
+    st.warning("⚠️ Nenhum dado processado ainda. Clique em **🚀 Processar MRP** para carregar os dados.")
+    st.stop()
+
 if "resultado" in st.session_state:
     r = st.session_state["resultado"]
     df_mrp         = r["mrp"]
