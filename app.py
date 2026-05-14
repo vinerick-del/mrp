@@ -430,20 +430,31 @@ for chave, numero, descricao, tipos, ajuda in _file_defs:
 with st.sidebar:
     st.header("🚀 MRP")
 
-    # ── Seção: Entrada de Arquivos (sempre visível) ────────────────────────────
-    with st.expander("📂 Arquivos de Entrada", expanded=True):
-        st.caption("Arraste e solte ou clique para selecionar. Salvos automaticamente.")
-        cols_upload = st.columns(2)
-        for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
-            col = cols_upload[idx % 2]
-            with col:
-                _file_uploaders[chave] = st.file_uploader(
-                    _label_upload(numero, descricao, chave),
-                    type=tipos,
-                    key=f"up_{chave}",
-                    help=ajuda,
-                )
-                _caption_arquivo(chave)
+    if "resultado" not in st.session_state:
+        # ── Antes de processar: apenas expander recolhido ─────────────────────
+        with st.expander("📂 Importação de Arquivos", expanded=False):
+            st.caption("Arraste e solte ou clique para selecionar. Salvos automaticamente.")
+            cols_upload = st.columns(2)
+            for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
+                col = cols_upload[idx % 2]
+                with col:
+                    _file_uploaders[chave] = st.file_uploader(
+                        _label_upload(numero, descricao, chave),
+                        type=tipos,
+                        key=f"up_{chave}",
+                        help=ajuda,
+                    )
+                    _caption_arquivo(chave)
+
+            st.divider()
+            if _tem_dados_minimos():
+                st.caption("✅ Dados carregados.")
+            btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
+    else:
+        # Processar uploads imediatamente quando há novos uploads
+        for chave, numero, descricao, tipos, ajuda in _file_defs:
+            _file_uploaders[chave] = None
+        btn_processar = False
 
     # Processar uploads imediatamente
     _novos_uploads = [k for k, v in _file_uploaders.items() if v is not None]
@@ -455,17 +466,9 @@ with st.sidebar:
         st.session_state.pop("_auto_processado", None)
         st.rerun()
 
-    st.divider()
-    btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
-    if _tem_dados_minimos():
-        st.caption("✅ Dados carregados.")
-
-    st.divider()
-
     # ── Menu de navegação — aparece após processar ─────────────────────────────
     _pagina = st.session_state.get("_pagina_atual", "📅 Projeção de Estoque")
 
-    # ── Menu de navegação do Dashboard (só aparece após processar) ──────────────
     if "resultado" in st.session_state:
         def _nav_btn(label: str):
             _ativo = _pagina == label
@@ -488,6 +491,23 @@ with st.sidebar:
 
         with st.expander("🎯 PCM", expanded=True):
             _nav_btn("🎯 PCM — Materiais Críticos")
+
+        st.divider()
+        with st.expander("📂 Importação de Arquivos", expanded=False):
+            st.caption("Arraste e solte ou clique para selecionar. Salvos automaticamente.")
+            cols_upload2 = st.columns(2)
+            for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
+                col = cols_upload2[idx % 2]
+                with col:
+                    up = st.file_uploader(
+                        _label_upload(numero, descricao, chave),
+                        type=tipos,
+                        key=f"up2_{chave}",
+                        help=ajuda,
+                    )
+                    if up:
+                        _salvar_upload(up, chave)
+                    _caption_arquivo(chave)
 
         st.divider()
 
