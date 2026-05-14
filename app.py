@@ -414,21 +414,38 @@ with st.sidebar:
         st.caption("✅ Dados carregados — processamento automático ativo.")
 
     st.divider()
-    st.markdown("**📂 Arquivos de Entrada**  \nConfigure e importe seus arquivos na aba de *Importação*.")
+
+    # ── Menu de navegação vertical ────────────────────────────────────────────
+    _menu_opcoes = ["📂 Importação de Arquivos"]
+    if "resultado" in st.session_state:
+        _menu_opcoes += [
+            "📅 Projeção de Estoque",
+            "💰 Financeiro",
+            "📋 Saldo de Contrato",
+            "📂 Rateio",
+            "⚠️ Rateio Pendente",
+            "📊 Rateio DFP - Realizado",
+            "🎯 PCM — Materiais Críticos",
+        ]
+
+    _pagina = st.radio(
+        "Navegação",
+        _menu_opcoes,
+        label_visibility="collapsed",
+    )
+
+    st.divider()
 
     if st.button("🔄 Forçar Recarregamento (Limpar Cache)", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
-    st.divider()
     # Indicador de rateio manual configurado
     _rm_sidebar = _carregar_rateio_manual()
     if not _rm_sidebar.empty and "material" in _rm_sidebar.columns:
         _n_rm = _rm_sidebar["material"].nunique()
         if _n_rm > 0:
-            st.info(f"🔧 Rateio manual: **{_n_rm}** material(is) → aba ⚠️ Rateio Pendente")
-
-    st.caption("**Fluxo:** Arquivos → Importação → Processamento → Dashboard")
+            st.info(f"🔧 Rateio manual: **{_n_rm}** material(is)")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DEFINIÇÕES DE ARQUIVO PARA IMPORTAÇÃO
@@ -453,12 +470,9 @@ for chave, numero, descricao, tipos, ajuda in _file_defs:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ABA DE IMPORTAÇÃO DE ARQUIVOS (primeira aba antes do dashboard)
+# ROTEAMENTO DE PÁGINAS
 # ─────────────────────────────────────────────────────────────────────────────
-# Flag para detectar se estamos na aba de importação
-_em_importacao = st.session_state.get("_em_importacao", True) if "resultado" not in st.session_state else False
-
-if "resultado" not in st.session_state:
+if _pagina == "📂 Importação de Arquivos":
     # Mostrar aba de importação quando não há dados processados
     st.markdown("## 📂 Importação de Arquivos")
     st.info(
@@ -863,7 +877,7 @@ if "resultado" in st.session_state:
     df_fin_bruto   = r.get("df_fin_bruto",    pd.DataFrame())
     df_fluxo_bruto = r.get("df_fluxo_bruto",  pd.DataFrame())
 
-    # ── Métricas resumo ───────────────────────────────────────────────────────
+    # ── Métricas resumo (sempre visíveis no topo) ─────────────────────────────
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Materiais", df_mrp["material"].nunique())
     c2.metric("Pedidos gerados", len(df_ped),
@@ -878,7 +892,6 @@ if "resultado" in st.session_state:
     c3.metric("Volume financeiro", vol_str)
     c4.metric("⚠ Rupturas detectadas", len(rup["material"].unique()) if not rup.empty else 0)
     c5.metric("⚠ Contratos insuficientes", len(cont) if not cont.empty else 0)
-
     st.divider()
 
     # ── Pré-computar df_mrp_val (usado no download Excel) ────────────────────
@@ -890,17 +903,6 @@ if "resultado" in st.session_state:
     df_mrp_val["valor_unitario"] = df_mrp_val["valor_unitario"].fillna(0)
     df_mrp_val["valor_pedido"] = df_mrp_val["pedido_gerado"] * df_mrp_val["valor_unitario"]
     df_mrp_val = df_mrp_val.drop(columns=["valor_unitario"])
-
-    # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_proj, tab_fin, tab_cont, tab_rat, tab_rat_pend, tab_rat_dfp, tab_pcm = st.tabs([
-        "📅 Projeção de Estoque",
-        "💰 Financeiro",
-        "📋 Saldo de Contrato",
-        "📂 Rateio",
-        "⚠️ Rateio Pendente",
-        "📊 Rateio DFP - Realizado",
-        "🎯 PCM — Materiais Críticos",
-    ])
 
     # ── Helper: pivot projeção mensal (reutilizado na tela e no Excel) ──────────
     def _build_projecao_pivot(df: pd.DataFrame) -> pd.DataFrame:
@@ -923,7 +925,7 @@ if "resultado" in st.session_state:
             piv["Saldo Final"] = piv[date_cols[-1]]
         return piv
 
-    with tab_proj:
+    if _pagina == "📅 Projeção de Estoque":
         import collections as _col_mod
         import streamlit.components.v1 as _stc
 
@@ -1269,7 +1271,7 @@ if "resultado" in st.session_state:
         with _stab_sem:
             _stc.html(_render_proj_html(_df_sem, _mcols_sem, "Sem Pedidos"), height=640, scrolling=True)
 
-    with tab_fin:
+    if _pagina == "💰 Financeiro":
         st.subheader("Financeiro")
 
         # ── Raio-X de Auditoria (sempre visível, antes dos filtros) ──────────
@@ -1936,7 +1938,7 @@ if "resultado" in st.session_state:
                 else:
                     st.success("Todos os documentos possuem política de pagamento cadastrada.")
 
-    with tab_cont:
+    if _pagina == "📋 Saldo de Contrato":
         st.subheader("Cobertura Contratual dos Pedidos MRP")
         if contratos.empty:
             st.info(
@@ -2050,14 +2052,14 @@ if "resultado" in st.session_state:
             with st.expander("📄 Contratos vigentes carregados (raw)", expanded=False):
                 st.dataframe(contratos, use_container_width=True)
 
-    with tab_rat:
+    if _pagina == "📂 Rateio":
         st.subheader("Rateio por Departamento / Programa Orçamentário")
         if df_rateio.empty:
             st.info("Nenhum dado de rateio disponível.")
         else:
             st.dataframe(df_rateio, use_container_width=True, height=380)
 
-    with tab_rat_pend:
+    if _pagina == "⚠️ Rateio Pendente":
         st.subheader("Rateio Pendente / Atribuição Manual")
 
         # ── Auxiliares ────────────────────────────────────────────────────────
@@ -2343,7 +2345,7 @@ if "resultado" in st.session_state:
             except Exception as _e_lote:
                 st.error(f"Erro ao ler arquivo: {_e_lote}")
 
-    with tab_rat_dfp:
+    if _pagina == "📊 Rateio DFP - Realizado":
         st.subheader("Rateio DFP — Realizado")
         st.caption("Alocação Financeira por Material e Departamento")
 
@@ -2408,7 +2410,7 @@ if "resultado" in st.session_state:
             else:
                 st.dataframe(_dfp_rateio, use_container_width=True, height=380)
 
-    with tab_pcm:
+    if _pagina == "🎯 PCM — Materiais Críticos":
         st.subheader("PCM — Materiais Críticos")
 
         # Carregar arquivo PCM se disponível
