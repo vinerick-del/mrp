@@ -441,7 +441,10 @@ with st.sidebar:
         _nav_btn("🎯 PCM — Materiais Críticos")
 
     st.divider()
-    _nav_btn("📂 Importação de Arquivos")
+
+    # Importação só aparece quando não há resultado
+    if "resultado" not in st.session_state:
+        _nav_btn("📂 Importação de Arquivos")
 
     if st.button("🔄 Limpar Cache", use_container_width=True):
         st.session_state.clear()
@@ -881,6 +884,11 @@ _paginas_dashboard = {
     "📂 Rateio", "⚠️ Rateio Pendente", "📊 Rateio DFP - Realizado",
     "🎯 PCM — Materiais Críticos",
 }
+
+# Se há resultado e usuário está na importação, redirecionar para primeira página do dashboard
+if "resultado" in st.session_state and _pagina == "📂 Importação de Arquivos":
+    _pagina = "📅 Projeção de Estoque"
+    st.session_state["_pagina_atual"] = _pagina
 
 if _pagina in _paginas_dashboard and "resultado" not in st.session_state:
     st.title(_pagina)
