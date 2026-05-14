@@ -407,59 +407,6 @@ def _caption_arquivo(chave: str):
         st.caption(f"Último import: {info}")
 
 
-with st.sidebar:
-    st.header("🚀 MRP")
-    btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
-    if _tem_dados_minimos():
-        st.caption("✅ Dados carregados.")
-
-    st.divider()
-
-    # ── Menu de navegação — sempre visível ────────────────────────────────────
-    _pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
-
-    def _nav_btn(label: str):
-        _ativo = _pagina == label
-        if st.button(label, use_container_width=True,
-                     type="primary" if _ativo else "secondary"):
-            st.session_state["_pagina_atual"] = label
-            st.rerun()
-
-    with st.expander("📊 Análise", expanded=True):
-        _nav_btn("📅 Projeção de Estoque")
-        _nav_btn("💰 Financeiro")
-
-    with st.expander("📋 Contratos", expanded=True):
-        _nav_btn("📋 Saldo de Contrato")
-
-    with st.expander("📂 Rateio", expanded=True):
-        _nav_btn("📂 Rateio")
-        _nav_btn("⚠️ Rateio Pendente")
-        _nav_btn("📊 Rateio DFP - Realizado")
-
-    with st.expander("🎯 PCM", expanded=True):
-        _nav_btn("🎯 PCM — Materiais Críticos")
-
-    st.divider()
-
-    # Importação só aparece quando não há resultado
-    if "resultado" not in st.session_state:
-        _nav_btn("📂 Importação de Arquivos")
-
-    if st.button("🔄 Limpar Cache", use_container_width=True):
-        st.session_state.clear()
-        st.rerun()
-
-    st.divider()
-    _rm_sidebar = _carregar_rateio_manual()
-    if not _rm_sidebar.empty and "material" in _rm_sidebar.columns:
-        _n_rm = _rm_sidebar["material"].nunique()
-        if _n_rm > 0:
-            st.info(f"🔧 Rateio manual: **{_n_rm}** material(is)")
-
-# Página atual
-_pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
-
 # ─────────────────────────────────────────────────────────────────────────────
 # DEFINIÇÕES DE ARQUIVO PARA IMPORTAÇÃO
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,57 +423,29 @@ _file_defs = [
     ("pcm",       "⑩", "PCM — Materiais Críticos",       ["xlsx"],      "Arquivo PCM_*.xlsx do sistema de materiais críticos"),
 ]
 
-# Criar file_uploader para cada arquivo (será usado em Importação)
 _file_uploaders = {}
 for chave, numero, descricao, tipos, ajuda in _file_defs:
-    _file_uploaders[chave] = None  # Será preenchido na aba de Importação
+    _file_uploaders[chave] = None
 
+with st.sidebar:
+    st.header("🚀 MRP")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ROTEAMENTO DE PÁGINAS
-# ─────────────────────────────────────────────────────────────────────────────
-if _pagina == "📂 Importação de Arquivos":
-    # Mostrar aba de importação quando não há dados processados
-    st.markdown("## 📂 Importação de Arquivos")
-    st.info(
-        "👇 Selecione e carregue seus arquivos SAP abaixo. Os arquivos são salvos automaticamente. "
-        "Na próxima abertura, o app carrega os dados da última importação."
-    )
+    # ── Seção: Entrada de Arquivos (sempre visível) ────────────────────────────
+    with st.expander("📂 Arquivos de Entrada", expanded=True):
+        st.caption("Arraste e solte ou clique para selecionar. Salvos automaticamente.")
+        cols_upload = st.columns(2)
+        for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
+            col = cols_upload[idx % 2]
+            with col:
+                _file_uploaders[chave] = st.file_uploader(
+                    _label_upload(numero, descricao, chave),
+                    type=tipos,
+                    key=f"up_{chave}",
+                    help=ajuda,
+                )
+                _caption_arquivo(chave)
 
-    cols_upload = st.columns(2)
-    for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
-        col = cols_upload[idx % 2]
-        with col:
-            _file_uploaders[chave] = st.file_uploader(
-                _label_upload(numero, descricao, chave),
-                type=tipos,
-                key=f"up_{chave}",
-                help=ajuda,
-            )
-            _caption_arquivo(chave)
-
-    st.divider()
-    st.subheader("📋 Formato esperado de cada arquivo")
-    with st.expander("Ver especificações"):
-        st.markdown("""
-| # | Arquivo | Separador | Colunas-chave |
-|---|---------|-----------|---|
-| ① | Demanda DTM | `;` | CÓDIGO, MÊS, DEP., PROJETO, QTD |
-| ② | Remessas SAP | `TAB` | Material, Data de remessa, a ser fornecida (quantidade) |
-| ③ | Pedidos em Aberto | `TAB` ou `;` | Material, Quantidade, Valor total |
-| ④ | Estoque SAP | `TAB` | Produto, Qtd.disponível |
-| ⑤ | Contratos SAP | `TAB` | Material, Fim da validade, Qtd.prev.pendente, Preço líquido |
-| ⑥ | Materiais | `;` ou `TAB` | CÓDIGO, DESCRIÇÃO, VALOR UNITÁRIO |
-| ⑦ | Lead Times | `,` | material, lead_time_dias |
-| ⑧ | Histórico MB51 | `TAB` | Material, Data, Quantidade |
-| ⑨ | Política de Pagamento | `;` | documento, dias_parcela_1, dias_parcela_2 ... |
-| ⑩ | PCM — Materiais Críticos | XLSX | Definido no sistema |
-
-**Números em formato brasileiro:** `3.515,50` = 3515.50
-**Datas:** `dd/mm/yyyy`
-        """)
-
-    # Processar uploads
+    # Processar uploads imediatamente
     _novos_uploads = [k for k, v in _file_uploaders.items() if v is not None]
     if _novos_uploads:
         for chave, uploaded in _file_uploaders.items():
@@ -534,14 +453,57 @@ if _pagina == "📂 Importação de Arquivos":
                 _salvar_upload(uploaded, chave)
         st.session_state.pop("resultado", None)
         st.session_state.pop("_auto_processado", None)
-        st.session_state.pop("_pagina_importacao", None)
         st.rerun()
 
-    # Botão para voltar ao dashboard (se já houver resultado)
+    st.divider()
+    btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
+    if _tem_dados_minimos():
+        st.caption("✅ Dados carregados.")
+
+    st.divider()
+
+    # ── Menu de navegação — aparece após processar ─────────────────────────────
+    _pagina = st.session_state.get("_pagina_atual", "📅 Projeção de Estoque")
+
+    # ── Menu de navegação do Dashboard (só aparece após processar) ──────────────
     if "resultado" in st.session_state:
-        if st.button("← Voltar ao Dashboard", use_container_width=True):
-            st.session_state.pop("_pagina_importacao", None)
-            st.rerun()
+        def _nav_btn(label: str):
+            _ativo = _pagina == label
+            if st.button(label, use_container_width=True,
+                         type="primary" if _ativo else "secondary"):
+                st.session_state["_pagina_atual"] = label
+                st.rerun()
+
+        with st.expander("📊 Análise", expanded=True):
+            _nav_btn("📅 Projeção de Estoque")
+            _nav_btn("💰 Financeiro")
+
+        with st.expander("📋 Contratos", expanded=True):
+            _nav_btn("📋 Saldo de Contrato")
+
+        with st.expander("📂 Rateio", expanded=True):
+            _nav_btn("📂 Rateio")
+            _nav_btn("⚠️ Rateio Pendente")
+            _nav_btn("📊 Rateio DFP - Realizado")
+
+        with st.expander("🎯 PCM", expanded=True):
+            _nav_btn("🎯 PCM — Materiais Críticos")
+
+        st.divider()
+
+    if st.button("🔄 Limpar Cache", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
+    st.divider()
+    _rm_sidebar = _carregar_rateio_manual()
+    if not _rm_sidebar.empty and "material" in _rm_sidebar.columns:
+        _n_rm = _rm_sidebar["material"].nunique()
+        if _n_rm > 0:
+            st.info(f"🔧 Rateio manual: **{_n_rm}** material(is)")
+
+# Página atual
+_pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROCESSAMENTO — disparado pelo botão OU automaticamente na primeira sessão
