@@ -927,10 +927,21 @@ def _caption_arquivo(chave: str):
 
 
 with st.sidebar:
-    st.header("📂 Arquivos de Entrada")
+    st.markdown(
+        "<h2 style='color:#F5A623;margin-bottom:2px'>Arquivos de Entrada</h2>",
+        unsafe_allow_html=True,
+    )
     st.caption("Arquivos importados são **salvos automaticamente**. "
                "Na próxima abertura o app carrega os dados da última importação.")
 
+    # ── Categoria 1: Planejamento ─────────────────────────────────────────────
+    st.markdown(
+        "<div style='background:#1a3a5c;border-left:3px solid #F5A623;"
+        "padding:4px 8px;border-radius:4px;margin:10px 0 6px'>"
+        "<span style='color:#F5A623;font-size:11px;font-weight:700;letter-spacing:.5px'>"
+        "PLANEJAMENTO</span></div>",
+        unsafe_allow_html=True,
+    )
     f_demanda   = st.file_uploader(_label_upload("①","Demanda (DTM)","demanda"),
                                    type=["csv","txt"], key="up_demanda",
                                    help="demanda_dtm_raw.csv — separado por ';'")
@@ -941,6 +952,14 @@ with st.sidebar:
                                    help="ME2M/ME9F — lookup de datas e nºs de documento")
     _caption_arquivo("remessas")
 
+    # ── Categoria 2: Compras & Estoque ────────────────────────────────────────
+    st.markdown(
+        "<div style='background:#1a3a5c;border-left:3px solid #F5A623;"
+        "padding:4px 8px;border-radius:4px;margin:10px 0 6px'>"
+        "<span style='color:#F5A623;font-size:11px;font-weight:700;letter-spacing:.5px'>"
+        "COMPRAS & ESTOQUE</span></div>",
+        unsafe_allow_html=True,
+    )
     f_pedidos   = st.file_uploader(_label_upload("③","Pedidos em Aberto","pedidos"),
                                    type=["csv","txt"], key="up_pedidos",
                                    help="pedidos_abertos.csv — base principal de qtd/valores")
@@ -956,6 +975,14 @@ with st.sidebar:
                                    help="ME3M/ME3N — separado por TAB")
     _caption_arquivo("contratos")
 
+    # ── Categoria 3: Dados de Referência ──────────────────────────────────────
+    st.markdown(
+        "<div style='background:#1a3a5c;border-left:3px solid #F5A623;"
+        "padding:4px 8px;border-radius:4px;margin:10px 0 6px'>"
+        "<span style='color:#F5A623;font-size:11px;font-weight:700;letter-spacing:.5px'>"
+        "DADOS DE REFERÊNCIA</span></div>",
+        unsafe_allow_html=True,
+    )
     f_materiais = st.file_uploader(_label_upload("⑥","Materiais (catálogo)","materiais"),
                                    type=["csv","txt"], key="up_materiais",
                                    help="MM60/MM03 — CÓDIGO | DESCRIÇÃO | VALOR UNITÁRIO")
@@ -1591,29 +1618,52 @@ if "resultado" in st.session_state:
                     qtd   = ro.get("quantidade", 0)
                     mes_e = str(ro.get("mes_remessa", "—"))
                     ped   = str(ro.get("numero_pedido", "—"))
-                    linhas.append(f"<tr><td>📦 Em aberto</td><td>{ped}</td>"
-                                  f"<td>{forn[:22]}</td>"
-                                  f"<td style='text-align:right'>{int(qtd):,}</td>"
-                                  f"<td>{mes_e}</td></tr>")
+                    linhas.append(
+                        f"<tr>"
+                        f"<td><span style='display:inline-flex;align-items:center;gap:5px'>"
+                        f"<span style='width:8px;height:8px;border-radius:50%;"
+                        f"background:#F5A623;display:inline-block'></span>"
+                        f"<span style='color:#F5A623;font-weight:600'>Em aberto</span></span></td>"
+                        f"<td style='color:#7fc7ff;font-weight:600'>{ped}</td>"
+                        f"<td style='color:#e0e0e0'>{forn[:22]}</td>"
+                        f"<td style='text-align:right;color:#fff;font-weight:600'>{int(qtd):,}</td>"
+                        f"<td style='color:#aaa'>{mes_e}</td>"
+                        f"</tr>"
+                    )
             if not _novos_ped.empty:
                 sub = _novos_ped[_novos_ped["material"].astype(str) == str(mat)]
                 for _, ro in sub.iterrows():
                     qtd   = ro.get("quantidade", 0)
                     ent   = str(ro.get("periodo_entrega", "—"))
-                    linhas.append(f"<tr><td style='color:#a8e6cf'>🔧 Sugerido MRP</td>"
-                                  f"<td>—</td><td>—</td>"
-                                  f"<td style='text-align:right'>{int(qtd):,}</td>"
-                                  f"<td>{ent}</td></tr>")
+                    linhas.append(
+                        f"<tr>"
+                        f"<td><span style='display:inline-flex;align-items:center;gap:5px'>"
+                        f"<span style='width:8px;height:8px;border-radius:50%;"
+                        f"background:#a8e6cf;display:inline-block'></span>"
+                        f"<span style='color:#a8e6cf;font-weight:600'>Sugerido MRP</span></span></td>"
+                        f"<td style='color:#888'>—</td>"
+                        f"<td style='color:#888'>—</td>"
+                        f"<td style='text-align:right;color:#a8e6cf;font-weight:600'>{int(qtd):,}</td>"
+                        f"<td style='color:#aaa'>{ent}</td>"
+                        f"</tr>"
+                    )
             if not linhas:
-                return ("<div style='color:#aaa;font-style:italic;padding:4px'>"
+                return ("<div style='color:#aaa;font-style:italic;padding:8px;font-size:12px'>"
                         "Nenhum pedido em andamento</div>")
             rows = "".join(linhas[:10])
-            extra = f"<tr><td colspan='5' style='color:#888;font-size:10px'>+{len(linhas)-10} mais…</td></tr>" if len(linhas) > 10 else ""
-            return (f"<table style='width:100%;border-collapse:collapse;font-size:11px'>"
-                    f"<tr style='color:#aaa;font-size:10px'>"
-                    f"<th>Tipo</th><th>Pedido</th><th>Fornecedor</th>"
-                    f"<th>Qtd</th><th>Entrega</th></tr>"
-                    f"{rows}{extra}</table>")
+            extra = (f"<tr><td colspan='5' style='color:#888;font-size:10px;padding:4px'>"
+                     f"+{len(linhas)-10} mais…</td></tr>") if len(linhas) > 10 else ""
+            return (
+                f"<table style='width:100%;border-collapse:collapse;font-size:12px'>"
+                f"<tr style='border-bottom:1px solid #333'>"
+                f"<th style='color:#888;font-size:10px;font-weight:600;padding:3px 6px;text-align:left'>TIPO</th>"
+                f"<th style='color:#888;font-size:10px;font-weight:600;padding:3px 6px;text-align:left'>PEDIDO</th>"
+                f"<th style='color:#888;font-size:10px;font-weight:600;padding:3px 6px;text-align:left'>FORNECEDOR</th>"
+                f"<th style='color:#888;font-size:10px;font-weight:600;padding:3px 6px;text-align:right'>QTD</th>"
+                f"<th style='color:#888;font-size:10px;font-weight:600;padding:3px 6px;text-align:left'>ENTREGA</th>"
+                f"</tr>"
+                f"{rows}{extra}</table>"
+            )
 
         _tooltip_map = {str(m): _build_tooltip(str(m))
                         for m in _meta["material"].unique()}
@@ -1749,20 +1799,27 @@ if "resultado" in st.session_state:
 .th-ss{background:#2ecc71!important}
 .th-mx{background:#27ae60!important}
 /* Tooltip */
-.tip-host{position:relative;cursor:help}
+.tip-host{position:relative;cursor:pointer}
 .tip-host .tip{
-  display:none;position:absolute;left:0;bottom:110%;z-index:99999;
-  background:#1a1a2e;color:#f0f0f0;border-radius:8px;padding:12px 14px;
-  min-width:320px;max-width:420px;box-shadow:0 6px 20px rgba(0,0,0,.55);
-  border:1px solid #444;pointer-events:none;white-space:normal;
-  font-size:11px;line-height:1.4
+  display:none;position:absolute;left:0;bottom:115%;z-index:99999;
+  background:#0f1923;color:#f0f0f0;border-radius:10px;padding:14px 16px;
+  min-width:380px;max-width:480px;
+  box-shadow:0 8px 28px rgba(0,0,0,.75),0 0 0 1px rgba(245,166,35,.25);
+  border:1px solid #2a3a4a;pointer-events:none;white-space:normal;
+  font-size:12px;line-height:1.5
 }
 .tip-host:hover .tip{display:block}
-.tip-title{font-size:13px;font-weight:700;color:#7fc7ff;margin-bottom:8px}
+.tip-title{
+  font-size:14px;font-weight:700;color:#F5A623;
+  margin-bottom:10px;padding-bottom:6px;
+  border-bottom:1px solid #2a3a4a;
+  display:flex;align-items:center;gap:6px
+}
 .tip table{width:100%;border-collapse:collapse}
-.tip th{color:#aaa;font-size:10px;text-align:left;padding:2px 4px;border-bottom:1px solid #333}
-.tip td{padding:3px 5px;color:#fff;border-bottom:1px solid #2a2a3a}
+.tip th{color:#666;font-size:10px;text-align:left;padding:4px 6px;border-bottom:1px solid #1e2d3d;letter-spacing:.4px}
+.tip td{padding:5px 6px;border-bottom:1px solid #1a2535}
 .tip tr:last-child td{border-bottom:none}
+.tip tr:hover td{background:rgba(255,255,255,.04)}
 </style>
 """
             def _fmt(v):
@@ -1801,7 +1858,9 @@ if "resultado" in st.session_state:
                 tip_content = _tooltip_map.get(mat, "Sem pedidos registrados")
                 tip_html = (
                     f'<div class="tip">'
-                    f'<div class="tip-title">📦 Pedidos — {mat}</div>'
+                    f'<div class="tip-title">'
+                    f'<span style="font-size:16px">📋</span> Pedidos — {mat}'
+                    f'</div>'
                     f'{tip_content}</div>'
                 )
                 cells = (
