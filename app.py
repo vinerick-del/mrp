@@ -75,6 +75,7 @@ _ARQUIVOS_MAPA = {
     "lead"      : "lead_times.csv",
     "mb51"      : "historico_mb51.csv",
     "politica"  : "politica_pagamento.csv",
+    "pcm"       : "pcm_materiais.xlsx",
 }
 
 
@@ -456,6 +457,14 @@ with st.sidebar:
                                    help="CSV: documento | dias_parcela_1 | dias_parcela_2 ...")
     _caption_arquivo("politica")
 
+    f_pcm = st.file_uploader(
+        _label_upload("⑩", "PCM — Materiais Críticos", "pcm"),
+        type=["xlsx"],
+        key="up_pcm",
+        help="Arquivo PCM_*.xlsx exportado do sistema de gestão de materiais críticos",
+    )
+    _caption_arquivo("pcm")
+
     st.divider()
     btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
     if _tem_dados_minimos():
@@ -489,6 +498,7 @@ _uploads = {
     "lead"     : f_lead,
     "mb51"     : f_mb51,
     "politica" : f_politica,
+    "pcm"      : f_pcm,
 }
 _novos_uploads = [k for k, v in _uploads.items() if v is not None]
 if _novos_uploads:
@@ -864,46 +874,26 @@ if "resultado" in st.session_state:
 
     st.divider()
 
+    # ── Pré-computar df_mrp_val (usado no download Excel) ────────────────────
+    abc = r["abc"]
+    df_mrp_val = df_mrp.merge(
+        abc[["material", "valor_unitario"]].drop_duplicates("material"),
+        on="material", how="left",
+    )
+    df_mrp_val["valor_unitario"] = df_mrp_val["valor_unitario"].fillna(0)
+    df_mrp_val["valor_pedido"] = df_mrp_val["pedido_gerado"] * df_mrp_val["valor_unitario"]
+    df_mrp_val = df_mrp_val.drop(columns=["valor_unitario"])
+
     # ── Abas do dashboard ─────────────────────────────────────────────────────
-    tab_mrp, tab_proj, tab_ped, tab_fin, tab_rup, tab_cont, tab_rat, tab_rat_pend = st.tabs([
-        "📊 MRP Projetado",
+    tab_proj, tab_fin, tab_cont, tab_rat, tab_rat_pend, tab_rat_dfp, tab_pcm = st.tabs([
         "📅 Projeção de Estoque",
-        "🛒 Pedidos a Gerar",
-        "💰 Visão Financeira",
-        "🔴 Alertas de Ruptura",
+        "💰 Financeiro",
         "📋 Saldo de Contrato",
         "📂 Rateio",
         "⚠️ Rateio Pendente",
+        "📊 Rateio DFP - Realizado",
+        "🎯 PCM — Materiais Críticos",
     ])
-
-    with tab_mrp:
-        st.subheader("MRP Projetado")
-        st.caption("material | mes | demanda | entrada | estoque_proj | necessidade | valor_pedido")
-
-        # Enriquecer com valor_unitario do ABC para calcular valor do pedido gerado
-        abc = r["abc"]
-        df_mrp_val = df_mrp.merge(
-            abc[["material", "valor_unitario"]].drop_duplicates("material"),
-            on="material", how="left",
-        )
-        df_mrp_val["valor_unitario"] = df_mrp_val["valor_unitario"].fillna(0)
-        df_mrp_val["valor_pedido"] = df_mrp_val["pedido_gerado"] * df_mrp_val["valor_unitario"]
-        df_mrp_val = df_mrp_val.drop(columns=["valor_unitario"])
-
-        mats = sorted(df_mrp_val["material"].unique())
-        sel  = st.multiselect("Filtrar material(is)", mats, default=mats[:5] if len(mats) > 5 else mats)
-        df_show = df_mrp_val[df_mrp_val["material"].isin(sel)] if sel else df_mrp_val
-
-        n_cells = df_show.shape[0] * df_show.shape[1]
-        pd.set_option("styler.render.max_elements", max(n_cells, 262144))
-        st.dataframe(
-            df_show.style.applymap(
-                lambda v: "background-color: #ffcccc" if isinstance(v, (int, float)) and v < 0 else "",
-                subset=["estoque_proj"],
-            ),
-            use_container_width=True,
-            height=420,
-        )
 
     # ── Helper: pivot projeção mensal (reutilizado na tela e no Excel) ──────────
     def _build_projecao_pivot(df: pd.DataFrame) -> pd.DataFrame:
@@ -1272,36 +1262,8 @@ if "resultado" in st.session_state:
         with _stab_sem:
             _stc.html(_render_proj_html(_df_sem, _mcols_sem, "Sem Pedidos"), height=640, scrolling=True)
 
-    with tab_ped:
-        st.subheader("Pedidos a Gerar")
-        if df_ped.empty:
-            st.info("Nenhum pedido gerado para o horizonte configurado.")
-        else:
-            c1p, c2p, c3p = st.columns(3)
-            for cls, col in zip(["A", "B", "C"], [c1p, c2p, c3p]):
-                sub = df_ped[df_ped["classe"] == cls]
-                val = sub["valor_total_pedido"].sum() if not sub.empty else 0.0
-                if val >= 1_000_000:
-                    val_str = f"R$ {val/1_000_000:.1f}M"
-                elif val >= 1_000:
-                    val_str = f"R$ {val/1_000:.1f}K"
-                else:
-                    val_str = f"R$ {val:,.2f}"
-                col.metric(
-                    f"Classe {cls}",
-                    f"{len(sub)} pedido(s)",
-                    delta=f"{int(sub['quantidade'].sum()):,} un. · {val_str}" if not sub.empty else "0 un.",
-                )
-
-            fmt_moeda = {"valor_unitario": _fmt_brl_contabil, "valor_total_pedido": _fmt_brl_contabil}
-            st.dataframe(
-                df_ped.style.format(fmt_moeda, na_rep="-"),
-                use_container_width=True,
-                height=380,
-            )
-
     with tab_fin:
-        st.subheader("Visão Financeira")
+        st.subheader("Financeiro")
 
         # ── Raio-X de Auditoria (sempre visível, antes dos filtros) ──────────
         with st.expander("🕵️ Raio-X de Auditoria Financeira (Buscando Divergências)", expanded=False):
@@ -1967,14 +1929,6 @@ if "resultado" in st.session_state:
                 else:
                     st.success("Todos os documentos possuem política de pagamento cadastrada.")
 
-    with tab_rup:
-        st.subheader("Alertas de Ruptura de Estoque")
-        if rup.empty:
-            st.success("✅ Nenhuma ruptura detectada no horizonte de planejamento.")
-        else:
-            st.error(f"⚠ {rup['material'].nunique()} material(is) com estoque projetado negativo")
-            st.dataframe(rup, use_container_width=True)
-
     with tab_cont:
         st.subheader("Cobertura Contratual dos Pedidos MRP")
         if contratos.empty:
@@ -2007,6 +1961,14 @@ if "resultado" in st.session_state:
                 _cont_cols = ["material", "tipo_contrato", "saldo_contrato", "data_fim_vigencia"]
                 _cont_cols = [_c for _c in _cont_cols if _c in contratos.columns]
                 _cob = _cob.merge(contratos[_cont_cols], on="material", how="left")
+
+                # Observação: ACORDO DE PREÇO (1 contrato por material) ou ACORDO DE QUANTIDADE (>1)
+                _n_cont_por_mat = contratos.groupby("material").size().reset_index(name="_n_contratos")
+                _cob = _cob.merge(_n_cont_por_mat, on="material", how="left")
+                _cob["Observação"] = _cob["_n_contratos"].apply(
+                    lambda n: "ACORDO DE PREÇO" if n == 1 else ("ACORDO DE QUANTIDADE" if n > 1 else "")
+                )
+                _cob = _cob.drop(columns=["_n_contratos"])
 
                 # Enriquecer com descrição se disponível
                 _mat_df_c = r.get("materiais_df", pd.DataFrame())
@@ -2373,6 +2335,202 @@ if "resultado" in st.session_state:
                         st.rerun()
             except Exception as _e_lote:
                 st.error(f"Erro ao ler arquivo: {_e_lote}")
+
+    with tab_rat_dfp:
+        st.subheader("Rateio DFP — Realizado")
+        st.caption("Alocação Financeira por Material e Departamento")
+
+        _dfp_rateio = r.get("df_rateio", pd.DataFrame()) if not df_rateio.empty else df_rateio
+
+        if _dfp_rateio.empty:
+            st.info(
+                "Nenhum dado de alocação financeira disponível.  \n"
+                "Processe o MRP com os arquivos de rateio carregados para visualizar a alocação realizada."
+            )
+        else:
+            # Agrupar por material e departamento
+            _dfp_cols_grp = [c for c in ["material", "departamento", "programa_orcamentario"] if c in _dfp_rateio.columns]
+            _dfp_cols_num = [c for c in ["qtd_rateada", "valor_rateado"] if c in _dfp_rateio.columns]
+
+            if _dfp_cols_grp and _dfp_cols_num:
+                _dfp_agg = (
+                    _dfp_rateio
+                    .groupby(_dfp_cols_grp, as_index=False)[_dfp_cols_num]
+                    .sum()
+                    .sort_values(_dfp_cols_grp)
+                    .reset_index(drop=True)
+                )
+
+                # Enriquecer com descrição do material
+                _mat_dfp = r.get("materiais_df", pd.DataFrame())
+                if not _mat_dfp.empty and "descricao" in _mat_dfp.columns:
+                    _desc_dfp = _mat_dfp[["material", "descricao"]].drop_duplicates("material")
+                    _dfp_agg = _dfp_agg.merge(_desc_dfp, on="material", how="left")
+                    _dfp_agg.insert(1, "Descrição", _dfp_agg.pop("descricao"))
+
+                # Filtros
+                _dfp_depts = sorted(_dfp_agg["departamento"].dropna().unique().tolist()) if "departamento" in _dfp_agg.columns else []
+                _dfp_f1, _dfp_f2 = st.columns(2)
+                _dfp_sel_dept = _dfp_f1.selectbox("Departamento", ["Todos"] + _dfp_depts, key="dfp_dept")
+                _dfp_mats = sorted(_dfp_agg["material"].dropna().astype(str).unique().tolist())
+                _dfp_sel_mats = _dfp_f2.multiselect("Material", _dfp_mats, default=[], key="dfp_mats", placeholder="Todos")
+
+                _dfp_show = _dfp_agg.copy()
+                if _dfp_sel_dept != "Todos":
+                    _dfp_show = _dfp_show[_dfp_show["departamento"] == _dfp_sel_dept]
+                if _dfp_sel_mats:
+                    _dfp_show = _dfp_show[_dfp_show["material"].astype(str).isin(_dfp_sel_mats)]
+
+                # Formatar valores
+                _dfp_fmt = _dfp_show.copy()
+                if "valor_rateado" in _dfp_fmt.columns:
+                    _dfp_fmt["valor_rateado"] = _dfp_fmt["valor_rateado"].apply(_fmt_brl_contabil)
+                if "qtd_rateada" in _dfp_fmt.columns:
+                    _dfp_fmt["qtd_rateada"] = _dfp_fmt["qtd_rateada"].apply(lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+                st.dataframe(_dfp_fmt, use_container_width=True, height=420, hide_index=True)
+
+                # Totais
+                _dfp_tot_val = _dfp_show["valor_rateado"].sum() if "valor_rateado" in _dfp_show.columns else 0.0
+                _dfp_tot_mat = _dfp_show["material"].nunique()
+                _dfp_tot_dept = _dfp_show["departamento"].nunique() if "departamento" in _dfp_show.columns else 0
+                _dc1, _dc2, _dc3 = st.columns(3)
+                _dc1.metric("Total Alocado", _fmt_brl_contabil(_dfp_tot_val))
+                _dc2.metric("Materiais", _dfp_tot_mat)
+                _dc3.metric("Departamentos", _dfp_tot_dept)
+            else:
+                st.dataframe(_dfp_rateio, use_container_width=True, height=380)
+
+    with tab_pcm:
+        st.subheader("PCM — Materiais Críticos")
+
+        # Carregar arquivo PCM se disponível
+        _pcm_path = _path_arquivo("pcm")
+        _pcm_df = pd.DataFrame()
+        if os.path.exists(_pcm_path):
+            try:
+                _pcm_df = pd.read_excel(_pcm_path)
+                _pcm_df.columns = [str(c).strip() for c in _pcm_df.columns]
+            except Exception as _e_pcm:
+                st.warning(f"Erro ao carregar arquivo PCM: {_e_pcm}")
+
+        _pcm_tabs = st.tabs([
+            "📋 Agenda do Comprador",
+            "🛒 Emitir Pedido de Compra",
+            "📝 Contratar",
+            "📊 Coberturas",
+            "⚠️ Riscos por Dimensão",
+            "👥 Atividades por Colaborador",
+            "📤 Exportar Relatório",
+        ])
+
+        with _pcm_tabs[0]:  # Agenda do Comprador
+            st.markdown("#### 📋 Agenda do Comprador")
+            if _pcm_df.empty:
+                st.info(
+                    "Carregue o arquivo **PCM_*.xlsx** no painel lateral para visualizar "
+                    "a agenda do comprador com os materiais críticos."
+                )
+            else:
+                # Filtros básicos
+                _ag_cols = _pcm_df.columns.tolist()
+                _ag_f1, _ag_f2 = st.columns(2)
+                _ag_mat_col = next((c for c in _ag_cols if "material" in c.lower() or "código" in c.lower()), None)
+                _ag_resp_col = next((c for c in _ag_cols if "responsável" in c.lower() or "comprador" in c.lower() or "colaborador" in c.lower()), None)
+
+                _ag_filter_mat = _ag_f1.text_input("Filtrar por material/código", key="ag_mat_filt")
+                _ag_filter_resp = _ag_f2.text_input("Filtrar por comprador/responsável", key="ag_resp_filt")
+
+                _ag_show = _pcm_df.copy()
+                if _ag_filter_mat and _ag_mat_col:
+                    _ag_show = _ag_show[_ag_show[_ag_mat_col].astype(str).str.contains(_ag_filter_mat, case=False, na=False)]
+                if _ag_filter_resp and _ag_resp_col:
+                    _ag_show = _ag_show[_ag_show[_ag_resp_col].astype(str).str.contains(_ag_filter_resp, case=False, na=False)]
+
+                st.dataframe(_ag_show, use_container_width=True, height=420)
+                st.caption(f"Total: {len(_ag_show)} registro(s)")
+
+        with _pcm_tabs[1]:  # Emitir Pedido de Compra
+            st.markdown("#### 🛒 Emitir Pedido de Compra")
+            if _pcm_df.empty:
+                st.info("Carregue o arquivo **PCM_*.xlsx** para ver os materiais com pedido a emitir.")
+            else:
+                _emit_col = next((c for c in _pcm_df.columns if "emit" in c.lower() or "pedido" in c.lower() or "ação" in c.lower()), None)
+                _emit_df = _pcm_df.copy()
+                if _emit_col:
+                    _emit_df = _emit_df[_emit_df[_emit_col].astype(str).str.contains("emitir|pedido", case=False, na=False)]
+                st.dataframe(_emit_df, use_container_width=True, height=400)
+
+        with _pcm_tabs[2]:  # Contratar
+            st.markdown("#### 📝 Contratar")
+            if _pcm_df.empty:
+                st.info("Carregue o arquivo **PCM_*.xlsx** para ver os materiais que precisam de contratação.")
+            else:
+                _contr_col = next((c for c in _pcm_df.columns if "contrat" in c.lower() or "ação" in c.lower()), None)
+                _contr_df = _pcm_df.copy()
+                if _contr_col:
+                    _contr_df = _contr_df[_contr_df[_contr_col].astype(str).str.contains("contrat", case=False, na=False)]
+                st.dataframe(_contr_df, use_container_width=True, height=400)
+
+        with _pcm_tabs[3]:  # Coberturas
+            st.markdown("#### 📊 Coberturas")
+            if _pcm_df.empty:
+                st.info("Carregue o arquivo **PCM_*.xlsx** para visualizar as coberturas dos materiais críticos.")
+            else:
+                _cob_col = next((c for c in _pcm_df.columns if "cobertura" in c.lower() or "dias" in c.lower() or "meses" in c.lower()), None)
+                if _cob_col:
+                    _cob_pcm = _pcm_df[[c for c in _pcm_df.columns if True]].copy()
+                    st.dataframe(_cob_pcm.sort_values(_cob_col) if _cob_col in _cob_pcm.columns else _cob_pcm,
+                                 use_container_width=True, height=400)
+                else:
+                    st.dataframe(_pcm_df, use_container_width=True, height=400)
+
+        with _pcm_tabs[4]:  # Riscos por Dimensão
+            st.markdown("#### ⚠️ Riscos por Dimensão")
+            if _pcm_df.empty:
+                st.info("Carregue o arquivo **PCM_*.xlsx** para visualizar os riscos por dimensão.")
+            else:
+                _risco_col = next((c for c in _pcm_df.columns if "risco" in c.lower() or "dimensão" in c.lower() or "criticidade" in c.lower()), None)
+                if _risco_col:
+                    _risco_grp = _pcm_df.groupby(_risco_col).size().reset_index(name="Qtd. Materiais")
+                    _rc1, _rc2 = st.columns([1, 2])
+                    _rc1.dataframe(_risco_grp, use_container_width=True, hide_index=True)
+                    _rc2.dataframe(_pcm_df, use_container_width=True, height=350)
+                else:
+                    st.dataframe(_pcm_df, use_container_width=True, height=400)
+
+        with _pcm_tabs[5]:  # Atividades por Colaborador
+            st.markdown("#### 👥 Atividades por Colaborador")
+            if _pcm_df.empty:
+                st.info("Carregue o arquivo **PCM_*.xlsx** para ver as atividades por colaborador.")
+            else:
+                _colab_col = next((c for c in _pcm_df.columns if "colaborador" in c.lower() or "comprador" in c.lower() or "responsável" in c.lower()), None)
+                if _colab_col:
+                    _colab_grp = _pcm_df.groupby(_colab_col).size().reset_index(name="Qtd. Materiais")
+                    st.dataframe(_colab_grp, use_container_width=True, hide_index=True)
+                    st.divider()
+                    _sel_colab = st.selectbox("Ver atividades de:", ["Todos"] + sorted(_pcm_df[_colab_col].dropna().unique().tolist()), key="pcm_colab_sel")
+                    _colab_show = _pcm_df if _sel_colab == "Todos" else _pcm_df[_pcm_df[_colab_col] == _sel_colab]
+                    st.dataframe(_colab_show, use_container_width=True, height=360)
+                else:
+                    st.dataframe(_pcm_df, use_container_width=True, height=400)
+
+        with _pcm_tabs[6]:  # Exportar Relatório
+            st.markdown("#### 📤 Exportar Relatório PCM")
+            if _pcm_df.empty:
+                st.info("Carregue o arquivo **PCM_*.xlsx** para exportar o relatório.")
+            else:
+                try:
+                    _pcm_excel = _gerar_excel({"PCM — Materiais Críticos": _pcm_df})
+                    st.download_button(
+                        label="⬇ Baixar Relatório PCM (Excel)",
+                        data=_pcm_excel,
+                        file_name=f"pcm_materiais_criticos_{date.today().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                except Exception as _e_pcm_exp:
+                    st.error(f"Erro ao gerar relatório: {_e_pcm_exp}")
 
     # ── Download Excel ────────────────────────────────────────────────────────
     st.divider()
