@@ -416,9 +416,8 @@ with st.sidebar:
     st.divider()
 
     # ── Menu de navegação vertical ────────────────────────────────────────────
-    _menu_opcoes = ["📂 Importação de Arquivos"]
     if "resultado" in st.session_state:
-        _menu_opcoes += [
+        _menu_opcoes = [
             "📅 Projeção de Estoque",
             "💰 Financeiro",
             "📋 Saldo de Contrato",
@@ -427,16 +426,21 @@ with st.sidebar:
             "📊 Rateio DFP - Realizado",
             "🎯 PCM — Materiais Críticos",
         ]
+        _pagina = st.radio(
+            "Navegação",
+            _menu_opcoes,
+            label_visibility="collapsed",
+        )
+        st.divider()
+    else:
+        _pagina = "📂 Importação de Arquivos"
 
-    _pagina = st.radio(
-        "Navegação",
-        _menu_opcoes,
-        label_visibility="collapsed",
-    )
+    # Botão de importação de arquivos (sempre acessível)
+    if st.button("📂 Importação de Arquivos", use_container_width=True):
+        st.session_state["_pagina_importacao"] = True
+        st.rerun()
 
-    st.divider()
-
-    if st.button("🔄 Forçar Recarregamento (Limpar Cache)", use_container_width=True):
+    if st.button("🔄 Limpar Cache", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
@@ -446,6 +450,10 @@ with st.sidebar:
         _n_rm = _rm_sidebar["material"].nunique()
         if _n_rm > 0:
             st.info(f"🔧 Rateio manual: **{_n_rm}** material(is)")
+
+# Sobrescrever _pagina se botão de importação foi clicado
+if st.session_state.get("_pagina_importacao"):
+    _pagina = "📂 Importação de Arquivos"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DEFINIÇÕES DE ARQUIVO PARA IMPORTAÇÃO
@@ -519,10 +527,16 @@ if _pagina == "📂 Importação de Arquivos":
         for chave, uploaded in _file_uploaders.items():
             if uploaded:
                 _salvar_upload(uploaded, chave)
-        # Forçar reprocessamento quando novos arquivos chegarem
         st.session_state.pop("resultado", None)
         st.session_state.pop("_auto_processado", None)
+        st.session_state.pop("_pagina_importacao", None)
         st.rerun()
+
+    # Botão para voltar ao dashboard (se já houver resultado)
+    if "resultado" in st.session_state:
+        if st.button("← Voltar ao Dashboard", use_container_width=True):
+            st.session_state.pop("_pagina_importacao", None)
+            st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROCESSAMENTO — disparado pelo botão OU automaticamente na primeira sessão
