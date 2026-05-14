@@ -558,7 +558,19 @@ if _disparar:
                     print(f"  [LT]   Colunas em materiais.csv: {list(materiais.columns)}")
 
             # ── Pipeline MRP ──────────────────────────────────────────────────
-            demanda                  = passo_1_2_demanda()
+            # passo_1_2_demanda() retorna (demanda, df_raw) em versões recentes
+            # ou apenas demanda nas versões anteriores — compatível com ambas.
+            _p12_result = passo_1_2_demanda()
+            if isinstance(_p12_result, tuple):
+                demanda, _demanda_detail_raw = _p12_result
+            else:
+                demanda = _p12_result
+                raw_path = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW) if ARQUIVO_DEMANDA_RAW else None
+                _demanda_detail_raw = (
+                    transformar_demanda_dtm(raw_path)
+                    if raw_path and os.path.exists(raw_path)
+                    else pd.DataFrame()
+                )
             estoque                  = passo_3_estoque()
             entradas, df_abertos_fut = passo_4_pedidos_abertos()
             abc                      = passo_5_abc(demanda, materiais, contratos=contratos)
@@ -568,13 +580,7 @@ if _disparar:
                 lead_times_dict=lt_dict or None,
             )
 
-            # Detalhe de demanda para rateio
-            raw_path = os.path.join(DIR_DADOS, ARQUIVO_DEMANDA_RAW) if ARQUIVO_DEMANDA_RAW else None
-            demanda_detail = (
-                transformar_demanda_dtm(raw_path)
-                if raw_path and os.path.exists(raw_path)
-                else None
-            )
+            demanda_detail = _demanda_detail_raw if not _demanda_detail_raw.empty else None
             df_rateio = passo_12_rateio(df_ped, df_abertos_fut, demanda_detail=demanda_detail)
             # demanda_detail salvo para filtros de departamento/programa na Projeção de Estoque
             _demanda_detail_df = demanda_detail if demanda_detail is not None else pd.DataFrame()
