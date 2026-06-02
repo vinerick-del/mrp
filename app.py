@@ -1932,8 +1932,50 @@ if "resultado" in st.session_state:
                                 _fluxo_trace["material"].astype(str).map(_desc_tr).fillna("-")
                             )
 
+                            # Enriquecer com Fornecedor/Contrato
+                            _contratos_tr = r.get("contratos", pd.DataFrame())
+                            _fornecedor_map: dict = {}
+                            if not _contratos_tr.empty and "material" in _contratos_tr.columns and "fornecedor" in _contratos_tr.columns:
+                                _fornecedor_map = dict(zip(
+                                    _contratos_tr["material"].astype(str),
+                                    _contratos_tr["fornecedor"].astype(str)
+                                ))
+
+                            # Verificar se há saldo de contrato disponível por material
+                            _contrato_disponivel: dict = {}
+                            if not _contratos_tr.empty and "material" in _contratos_tr.columns and "saldo_contrato" in _contratos_tr.columns:
+                                for _, _ctr in _contratos_tr.iterrows():
+                                    _mat_ctr = str(_ctr.get("material", ""))
+                                    _saldo = float(_ctr.get("saldo_contrato", 0))
+                                    if _saldo > 0:
+                                        if _mat_ctr not in _contrato_disponivel:
+                                            _contrato_disponivel[_mat_ctr] = _ctr.get("fornecedor", "Desconhecido")
+
+                            def _obter_fornecedor(_row):
+                                _mat = str(_row.get("material", ""))
+                                _origem = str(_row.get("origem", ""))
+
+                                # Para pedidos existentes, usar o fornecedor do pedido se disponível
+                                if "Pedido Existente" in _origem or "Histórico" in _origem:
+                                    if "fornecedor" in _row and _row["fornecedor"]:
+                                        return str(_row["fornecedor"])
+                                    elif _mat in _fornecedor_map:
+                                        return _fornecedor_map[_mat]
+
+                                # Para novos pedidos MRP, verificar contrato disponível
+                                if "Novos" in _origem or "Gerado" in _origem:
+                                    if _mat in _contrato_disponivel:
+                                        return f"{_contrato_disponivel[_mat]} (contratado)"
+                                    else:
+                                        return "(a contratar)"
+
+                                # Default
+                                return _fornecedor_map.get(_mat, "-")
+
+                            _fluxo_trace["fornecedor"] = _fluxo_trace.apply(_obter_fornecedor, axis=1)
+
                             _trace_cols = [c for c in [
-                                "origem", "material", "descricao", "departamento", "programa_orcamentario",
+                                "origem", "material", "descricao", "fornecedor", "departamento", "programa_orcamentario",
                                 "mes_emissao", "mes_entrega",
                                 "parcela_label", "prazo_dias", "mes_pagamento",
                                 "valor_pedido_total", "valor_parcela", "valor_rateado",
@@ -1944,6 +1986,7 @@ if "resultado" in st.session_state:
                                     "origem"                : "Origem",
                                     "material"              : "Material",
                                     "descricao"             : "Descrição",
+                                    "fornecedor"            : "Fornecedor/Contrato",
                                     "departamento"          : "Departamento",
                                     "programa_orcamentario" : "Programa",
                                     "mes_emissao"           : "Mês Emissão",
