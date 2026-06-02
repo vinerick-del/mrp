@@ -1,0 +1,10 @@
+#	Nome na tela	Nome do arquivo esperado
+①	Demanda (DTM)	demanda.csv
+②	Remessas SAP	remessas_sap.csv
+③	Pedidos Abertos	pedidos_abertos.csv
+④	Estoque SAP	estoque_sap.csv
+⑤	Contratos SAP	contratos_sap.csv
+⑥	Materiais (catálogo)	materiais.csv
+⑦	Lead Times	lead_times.csv
+⑧	Histórico MB51	historico_mb51.csv
+⑨	Política de Pagamento	politica_pagamento.csv
