@@ -169,49 +169,54 @@ def _chart_financeiro(agg: pd.DataFrame, titulo: str, cor_tendencia: str = "#FFD
 # HELPER: gerar Excel com múltiplas abas em memória
 # ─────────────────────────────────────────────────────────────────────────────
 def _gerar_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
-    """Recebe {nome_aba: DataFrame} e retorna bytes do .xlsx.
+    """Recebe {nome_aba: DataFrame} e retorna bytes do .xlsx com openpyxl.
     Colunas cujo nome contém 'valor', 'total' ou 'parcela' recebem formato R$ contábil.
     """
+    # Forçar openpyxl (não usar xlsxwriter para manter formatação)
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for nome_aba, df in dfs.items():
-            df_exp = df.copy()
-            # Garantir que colunas de valor sejam float puro antes de gravar.
-            # Se alguma coluna vier como string com formato brasileiro ("3.164,73"),
-            # converter para float para evitar valores absurdos no Excel.
-            _cols_moeda = [
-                col for col in df_exp.columns
-                if any(k in str(col).lower() for k in ("valor", "total", "parcela", "preco", "preço"))
-            ]
-            for col in _cols_moeda:
-                if df_exp[col].dtype == object:
-                    df_exp[col] = (
-                        df_exp[col].astype(str)
-                        .str.replace(r"R\$\s*", "", regex=True)
-                        .str.replace(r"\.", "", regex=True)   # remove ponto de milhar
-                        .str.replace(",", ".", regex=False)   # converte vírgula decimal
-                        .str.strip()
-                    )
-                    df_exp[col] = pd.to_numeric(df_exp[col], errors="coerce")
+    try:
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            for nome_aba, df in dfs.items():
+                df_exp = df.copy()
+                # Garantir que colunas de valor sejam float puro antes de gravar.
+                # Se alguma coluna vier como string com formato brasileiro ("3.164,73"),
+                # converter para float para evitar valores absurdos no Excel.
+                _cols_moeda = [
+                    col for col in df_exp.columns
+                    if any(k in str(col).lower() for k in ("valor", "total", "parcela", "preco", "preço"))
+                ]
+                for col in _cols_moeda:
+                    if df_exp[col].dtype == object:
+                        df_exp[col] = (
+                            df_exp[col].astype(str)
+                            .str.replace(r"R\$\s*", "", regex=True)
+                            .str.replace(r"\.", "", regex=True)   # remove ponto de milhar
+                            .str.replace(",", ".", regex=False)   # converte vírgula decimal
+                            .str.strip()
+                        )
+                        df_exp[col] = pd.to_numeric(df_exp[col], errors="coerce")
 
-            df_exp.to_excel(writer, sheet_name=nome_aba[:31], index=True)
-            ws = writer.sheets[nome_aba[:31]]
-            # Aplica formato contábil nas colunas de valor
-            colunas_valor = [
-                i + 2  # +1 porque index ocupa col A, +1 para base 1
-                for i, col in enumerate(df_exp.columns)
-                if any(k in str(col).lower() for k in ("valor", "total", "parcela", "preco", "preço"))
-            ]
-            for col_idx in colunas_valor:
-                for row in ws.iter_rows(
-                    min_row=2, max_row=ws.max_row,
-                    min_col=col_idx, max_col=col_idx
-                ):
-                    for cell in row:
-                        # Só aplica formato numérico se o valor for de fato numérico
-                        if isinstance(cell.value, (int, float)) and cell.value is not None:
-                            cell.number_format = _FMT_MOEDA_EXCEL
-    return buf.getvalue()
+                df_exp.to_excel(writer, sheet_name=nome_aba[:31], index=True)
+                ws = writer.sheets[nome_aba[:31]]
+                # Aplica formato contábil nas colunas de valor
+                colunas_valor = [
+                    i + 2  # +1 porque index ocupa col A, +1 para base 1
+                    for i, col in enumerate(df_exp.columns)
+                    if any(k in str(col).lower() for k in ("valor", "total", "parcela", "preco", "preço"))
+                ]
+                for col_idx in colunas_valor:
+                    for row in ws.iter_rows(
+                        min_row=2, max_row=ws.max_row,
+                        min_col=col_idx, max_col=col_idx
+                    ):
+                        for cell in row:
+                            # Só aplica formato numérico se o valor for de fato numérico
+                            if isinstance(cell.value, (int, float)) and cell.value is not None:
+                                cell.number_format = _FMT_MOEDA_EXCEL
+        return buf.getvalue()
+    except Exception as e:
+        # Se openpyxl falhar completamente, lançar erro (não usar CSV como fallback)
+        raise RuntimeError(f"Falha ao gerar Excel com openpyxl: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2689,25 +2694,8 @@ if "resultado" in st.session_state:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-    except ImportError as e:
-        # Tentar alternativa com xlsxwriter se openpyxl não disponível
-        try:
-            import xlsxwriter
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                for nome_aba, df in dfs_excel.items():
-                    df.to_excel(writer, sheet_name=nome_aba[:31], index=True)
-            excel_bytes = buf.getvalue()
-            nome_arquivo = f"mrp_{date.today().strftime('%Y%m%d')}.xlsx"
-            st.download_button(
-                label="⬇ Baixar Excel (todas as abas)",
-                data=excel_bytes,
-                file_name=nome_arquivo,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        except ImportError:
-            st.error("❌ Nenhuma biblioteca Excel disponível. Instale: `pip install openpyxl` ou `pip install xlsxwriter`")
+    except ImportError:
+        st.error("❌ openpyxl não instalado. Execute: `pip install openpyxl`")
     except Exception as exc:
         st.error(f"❌ Erro ao gerar Excel: {exc}")
 
