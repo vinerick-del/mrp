@@ -1967,6 +1967,21 @@ if "resultado" in st.session_state:
                                 height=400,
                             )
 
+                            # Botão de download dedicado — valores numéricos puros sem símbolo
+                            try:
+                                _trace_excel_buf = io.BytesIO()
+                                with pd.ExcelWriter(_trace_excel_buf, engine="openpyxl") as _tw:
+                                    df_trace.to_excel(_tw, sheet_name="Rastreio", index=False)
+                                st.download_button(
+                                    label="⬇ Exportar Rastreio (.xlsx)",
+                                    data=_trace_excel_buf.getvalue(),
+                                    file_name=f"rastreio_{date.today().strftime('%Y%m%d')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True,
+                                )
+                            except Exception as _te:
+                                st.warning(f"Não foi possível gerar Excel: {_te}")
+
             with subtab_ent:
                 st.caption(
                     f"Valor e quantidade de pedidos por mês de chegada ao estoque · {_sel_ano}"
