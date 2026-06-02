@@ -690,9 +690,12 @@ if _disparar:
                 _tmp["numero_pedido"]        = _tmp.get("numero_pedido", pd.Series([None]*len(_tmp)))
                 _tmp["origem"]               = _tmp["_origem_mrp"]
                 _tmp["valor_pedido"]         = _tmp["valor_total_pedido"]
-                _linhas_fin.append(_tmp[["origem","material","quantidade","valor_pedido",
-                                         "mes_pedido","mes_entrega","data_base_pagamento",
-                                         "documento_referencia","numero_pedido"]])
+                _cols_tmp = ["origem","material","quantidade","valor_pedido",
+                            "mes_pedido","mes_entrega","data_base_pagamento",
+                            "documento_referencia","numero_pedido"]
+                if "fornecedor" in _tmp.columns:
+                    _cols_tmp.append("fornecedor")
+                _linhas_fin.append(_tmp[_cols_tmp])
 
             if not df_abertos_fut.empty:
                 _tmp2 = df_abertos_fut.copy()
@@ -734,9 +737,12 @@ if _disparar:
                 _tmp2["origem"]        = "Pedido Existente (SAP)"
                 _tmp2["valor_pedido"]  = _tmp2["valor_total_pedido"].fillna(0)
                 _tmp2["numero_pedido"] = _tmp2["numero_pedido"].astype(str).str.strip() if "numero_pedido" in _tmp2.columns else None
-                _linhas_fin.append(_tmp2[["origem","material","quantidade","valor_pedido",
-                                          "mes_pedido","mes_entrega","data_base_pagamento",
-                                          "documento_referencia","numero_pedido"]])
+                _cols_tmp2 = ["origem","material","quantidade","valor_pedido",
+                              "mes_pedido","mes_entrega","data_base_pagamento",
+                              "documento_referencia","numero_pedido"]
+                if "fornecedor" in _tmp2.columns:
+                    _cols_tmp2.append("fornecedor")
+                _linhas_fin.append(_tmp2[_cols_tmp2])
 
             if not df_mb51.empty:
                 _tmp3 = df_mb51.copy()
@@ -765,9 +771,12 @@ if _disparar:
                 _tmp3["documento_referencia"] = _tmp3["numero_pedido"]
                 _tmp3["numero_pedido"]        = _tmp3["numero_pedido"]
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
-                _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
-                                          "mes_pedido","mes_entrega","data_base_pagamento",
-                                          "documento_referencia","numero_pedido"]])
+                _cols_tmp3 = ["origem","material","quantidade","valor_pedido",
+                              "mes_pedido","mes_entrega","data_base_pagamento",
+                              "documento_referencia","numero_pedido"]
+                if "fornecedor" in _tmp3.columns:
+                    _cols_tmp3.append("fornecedor")
+                _linhas_fin.append(_tmp3[_cols_tmp3])
 
             _df_fin = pd.concat(_linhas_fin, ignore_index=True) if _linhas_fin else pd.DataFrame()
 
@@ -824,6 +833,7 @@ if _disparar:
                             "valor_parcela"       : _resto if _i == _n - 1 else _vbase,
                             "num_parcela"         : _i + 1,
                             "tot_parcelas"        : _n,
+                            "fornecedor"          : _row.get("fornecedor", "-"),
                         })
                 if _parcelas:
                     _df_fluxo = pd.DataFrame(_parcelas)
