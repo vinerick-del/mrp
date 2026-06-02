@@ -625,8 +625,9 @@ if _disparar:
                 _tmp["mes_pedido"]           = pd.to_datetime(_tmp["data_pedido"], format="%d/%m/%Y", errors="coerce").dt.to_period("M").astype(str)
                 _tmp["mes_entrega"]          = _tmp["periodo_entrega"]
                 _tmp["data_base_pagamento"]  = pd.to_datetime(_tmp["data_chegada"], format="%d/%m/%Y", errors="coerce")
-                _tmp["documento_referencia"] = None
-                _tmp["numero_pedido"]        = None
+                # Usar contrato como documento_referencia se disponível
+                _tmp["documento_referencia"] = _tmp.get("contrato", pd.Series([None]*len(_tmp)))
+                _tmp["numero_pedido"]        = _tmp.get("numero_pedido", pd.Series([None]*len(_tmp)))
                 _tmp["origem"]               = _tmp["_origem_mrp"]
                 _tmp["valor_pedido"]         = _tmp["valor_total_pedido"]
                 _linhas_fin.append(_tmp[["origem","material","quantidade","valor_pedido",
@@ -739,7 +740,7 @@ if _disparar:
                         _dias = politica_pag_carregada[str(_contrato_ref)]
                     if _dias is None and _pedido_ref and str(_pedido_ref) in politica_pag_carregada:
                         _dias = politica_pag_carregada[str(_pedido_ref)]
-                    if _dias is None:
+                    if _dias is None or not _dias or len(_dias) == 0:
                         _dias = [60, 90]
                         _log_sem_politica.append({
                             "origem"      : _row["origem"],
@@ -748,7 +749,7 @@ if _disparar:
                             "pedido"      : _pedido_ref,
                             "valor_pedido": _row["valor_pedido"],
                         })
-                    _n     = len(_dias)
+                    _n = max(1, len(_dias))  # Garante que _n >= 1 para evitar divisão por zero
                     _vbase = round(_row["valor_pedido"] / _n, 2)
                     _resto = round(_row["valor_pedido"] - (_vbase * (_n - 1)), 2)
                     for _i, _d in enumerate(_dias):
@@ -1499,7 +1500,7 @@ if "resultado" in st.session_state:
                 pv["Total"] = pv.sum(axis=1)
                 total_row = pv.sum(numeric_only=True)
                 total_row.name = "TOTAL GERAL"
-                pv = pd.concat([pv, total_row.to_frame().T])
+                pv = pd.concat([pv, total_row.to_frame().T], ignore_index=False)
                 return pv
 
             _vis_orc_f = _pivot_com_total(_fin_f,   "mes_pedido",    "valor_rateado")
