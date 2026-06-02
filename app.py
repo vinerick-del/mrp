@@ -641,6 +641,14 @@ if _disparar:
                     print("  [FIN] ⚠ Usando fallback ABC para precificar pedidos existentes")
                     _abc_price = abc[["material","valor_unitario"]].drop_duplicates("material")
                     _tmp2 = _tmp2.merge(_abc_price, on="material", how="left")
+                    if not materiais_df.empty and "valor_unitario" in materiais_df.columns:
+                        _mask_sem_preco = _tmp2["valor_unitario"].isna()
+                        if _mask_sem_preco.any():
+                            _mat_prices = materiais_df[["material", "valor_unitario"]].drop_duplicates("material")
+                            _tmp2.loc[_mask_sem_preco, "valor_unitario"] = (
+                                _tmp2.loc[_mask_sem_preco, "material"]
+                                .map(dict(zip(_mat_prices["material"], _mat_prices["valor_unitario"])))
+                            )
                     _tmp2["valor_total_pedido"] = _tmp2["quantidade"] * _tmp2["valor_unitario"].fillna(0)
                     print(f"  [FIN] Após fallback ABC       : R$ {_tmp2['valor_total_pedido'].sum():,.2f}")
                 # mes_pedido = mês de emissão do PO (Data do documento) → visão orçamentária
@@ -693,8 +701,8 @@ if _disparar:
                     _tmp3["data_base_pagamento"] = pd.to_datetime(
                         _tmp3["mes_entrega"] + "-15", format="%Y-%m-%d", errors="coerce"
                     )
-                _tmp3["documento_referencia"] = None
-                _tmp3["numero_pedido"]        = None
+                _tmp3["documento_referencia"] = _tmp3["numero_pedido"]
+                _tmp3["numero_pedido"]        = _tmp3["numero_pedido"]
                 _tmp3["origem"]               = "Histórico Recebido (MB51)"
                 _linhas_fin.append(_tmp3[["origem","material","quantidade","valor_pedido",
                                           "mes_pedido","mes_entrega","data_base_pagamento",
@@ -913,10 +921,20 @@ if "resultado" in st.session_state:
 
     # ── Pré-computar df_mrp_val (usado no download Excel) ────────────────────
     abc = r["abc"]
+    materiais_df = r.get("materiais_df", pd.DataFrame())
     df_mrp_val = df_mrp.merge(
         abc[["material", "valor_unitario"]].drop_duplicates("material"),
         on="material", how="left",
     )
+    # Fallback: se ABC não tem preço, tenta pegar de materiais_df
+    if "valor_unitario" in df_mrp_val.columns and not materiais_df.empty:
+        _mask_sem_preco = df_mrp_val["valor_unitario"].isna()
+        if _mask_sem_preco.any() and "valor_unitario" in materiais_df.columns:
+            _mat_prices = materiais_df[["material", "valor_unitario"]].drop_duplicates("material")
+            df_mrp_val.loc[_mask_sem_preco, "valor_unitario"] = (
+                df_mrp_val.loc[_mask_sem_preco, "material"]
+                .map(dict(zip(_mat_prices["material"], _mat_prices["valor_unitario"])))
+            )
     df_mrp_val["valor_unitario"] = df_mrp_val["valor_unitario"].fillna(0)
     df_mrp_val["valor_pedido"] = df_mrp_val["pedido_gerado"] * df_mrp_val["valor_unitario"]
     df_mrp_val = df_mrp_val.drop(columns=["valor_unitario"])
