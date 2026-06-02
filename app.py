@@ -428,12 +428,21 @@ for chave, numero, descricao, tipos, ajuda in _file_defs:
     _file_uploaders[chave] = None
 
 with st.sidebar:
-    st.header("🚀 MRP")
+    # ── Header Moderno ────────────────────────────────────────────────────────
+    st.markdown("# 🚀 MRP System")
+    st.markdown("---")
+
+    # ── Página Atual ──────────────────────────────────────────────────────────
+    _pagina = st.session_state.get("_pagina_atual", "📅 Projeção de Estoque")
 
     if "resultado" not in st.session_state:
-        # ── Antes de processar: apenas expander recolhido ─────────────────────
-        with st.expander("📂 Importação de Arquivos", expanded=False):
-            st.caption("Arraste e solte ou clique para selecionar. Salvos automaticamente.")
+        # ─────────────────────────────────────────────────────────────────────
+        # ANTES DE PROCESSAR: Menu de importação
+        # ─────────────────────────────────────────────────────────────────────
+        st.markdown("### 📥 Iniciar Processamento")
+
+        with st.expander("📂 Importar Arquivos", expanded=True):
+            st.markdown("**Carregue seus arquivos SAP:**")
             cols_upload = st.columns(2)
             for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
                 col = cols_upload[idx % 2]
@@ -446,10 +455,13 @@ with st.sidebar:
                     )
                     _caption_arquivo(chave)
 
-            st.divider()
+            st.markdown("---")
             if _tem_dados_minimos():
-                st.caption("✅ Dados carregados.")
-            btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True)
+                st.success("✅ Dados carregados com sucesso")
+            else:
+                st.warning("⚠️ Carregue ao menos Demanda e Estoque")
+
+            btn_processar = st.button("🚀 Processar MRP", type="primary", use_container_width=True, key="btn_proc_main")
     else:
         # Processar uploads imediatamente quando há novos uploads
         for chave, numero, descricao, tipos, ajuda in _file_defs:
@@ -466,35 +478,49 @@ with st.sidebar:
         st.session_state.pop("_auto_processado", None)
         st.rerun()
 
-    # ── Menu de navegação — aparece após processar ─────────────────────────────
-    _pagina = st.session_state.get("_pagina_atual", "📅 Projeção de Estoque")
-
+    # ─────────────────────────────────────────────────────────────────────────
+    # APÓS PROCESSAR: Menu de Navegação
+    # ─────────────────────────────────────────────────────────────────────────
     if "resultado" in st.session_state:
-        def _nav_btn(label: str):
+        st.markdown("### 📊 Dashboard")
+        st.markdown("---")
+
+        def _nav_btn(label: str, icone_prefix: str = ""):
             _ativo = _pagina == label
-            if st.button(label, use_container_width=True,
-                         type="primary" if _ativo else "secondary"):
+            if st.button(
+                label,
+                use_container_width=True,
+                type="primary" if _ativo else "secondary",
+                key=f"nav_{label}"
+            ):
                 st.session_state["_pagina_atual"] = label
                 st.rerun()
 
+        # ── Análise ───────────────────────────────────────────────────────────
         with st.expander("📊 Análise", expanded=True):
             _nav_btn("📅 Projeção de Estoque")
             _nav_btn("💰 Financeiro")
 
-        with st.expander("📋 Contratos", expanded=True):
+        # ── Contratos ─────────────────────────────────────────────────────────
+        with st.expander("📋 Contratos", expanded=False):
             _nav_btn("📋 Saldo de Contrato")
 
-        with st.expander("📂 Rateio", expanded=True):
+        # ── Rateio ────────────────────────────────────────────────────────────
+        with st.expander("📂 Rateio", expanded=False):
             _nav_btn("📂 Rateio")
             _nav_btn("⚠️ Rateio Pendente")
             _nav_btn("📊 Rateio DFP - Realizado")
 
-        with st.expander("🎯 PCM", expanded=True):
+        # ── PCM ───────────────────────────────────────────────────────────────
+        with st.expander("🎯 PCM", expanded=False):
             _nav_btn("🎯 PCM — Materiais Críticos")
 
-        st.divider()
-        with st.expander("📂 Importação de Arquivos", expanded=False):
-            st.caption("Arraste e solte ou clique para selecionar. Salvos automaticamente.")
+        st.markdown("---")
+
+        # ── Atualizar Arquivos ────────────────────────────────────────────────
+        st.markdown("### 🔄 Atualizar Dados")
+        with st.expander("📁 Reimportar Arquivos", expanded=False):
+            st.markdown("**Carregue novos arquivos para atualizar:**")
             cols_upload2 = st.columns(2)
             for idx, (chave, numero, descricao, tipos, ajuda) in enumerate(_file_defs):
                 col = cols_upload2[idx % 2]
@@ -509,18 +535,31 @@ with st.sidebar:
                         _salvar_upload(up, chave)
                     _caption_arquivo(chave)
 
-        st.divider()
+    # ─────────────────────────────────────────────────────────────────────────
+    # Ferramentas Gerais
+    # ─────────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### ⚙️ Ferramentas")
 
-    if st.button("🔄 Limpar Cache", use_container_width=True):
-        st.session_state.clear()
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Limpar", use_container_width=True, help="Limpar cache e dados"):
+            st.session_state.clear()
+            st.rerun()
+    with col2:
+        if st.button("ℹ️ Ajuda", use_container_width=True, help="Ver documentação"):
+            st.info("📖 Documentação e suporte disponíveis no repositório GitHub")
 
-    st.divider()
+    st.markdown("---")
+
+    # ── Informações ───────────────────────────────────────────────────────────
     _rm_sidebar = _carregar_rateio_manual()
     if not _rm_sidebar.empty and "material" in _rm_sidebar.columns:
         _n_rm = _rm_sidebar["material"].nunique()
         if _n_rm > 0:
-            st.info(f"🔧 Rateio manual: **{_n_rm}** material(is)")
+            st.success(f"🔧 Rateio manual carregado: **{_n_rm}** material(is)")
+
+    st.caption("v1.0 — MRP Avançado com IA")
 
 # Página atual
 _pagina = st.session_state.get("_pagina_atual", "📂 Importação de Arquivos")
