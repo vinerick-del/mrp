@@ -175,13 +175,32 @@ def _gerar_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for nome_aba, df in dfs.items():
-            df.to_excel(writer, sheet_name=nome_aba[:31], index=True)
+            df_exp = df.copy()
+            # Garantir que colunas de valor sejam float puro antes de gravar.
+            # Se alguma coluna vier como string com formato brasileiro ("3.164,73"),
+            # converter para float para evitar valores absurdos no Excel.
+            _cols_moeda = [
+                col for col in df_exp.columns
+                if any(k in str(col).lower() for k in ("valor", "total", "parcela", "preco", "preço"))
+            ]
+            for col in _cols_moeda:
+                if df_exp[col].dtype == object:
+                    df_exp[col] = (
+                        df_exp[col].astype(str)
+                        .str.replace(r"R\$\s*", "", regex=True)
+                        .str.replace(r"\.", "", regex=True)   # remove ponto de milhar
+                        .str.replace(",", ".", regex=False)   # converte vírgula decimal
+                        .str.strip()
+                    )
+                    df_exp[col] = pd.to_numeric(df_exp[col], errors="coerce")
+
+            df_exp.to_excel(writer, sheet_name=nome_aba[:31], index=True)
             ws = writer.sheets[nome_aba[:31]]
             # Aplica formato contábil nas colunas de valor
             colunas_valor = [
                 i + 2  # +1 porque index ocupa col A, +1 para base 1
-                for i, col in enumerate(df.columns)
-                if any(k in str(col).lower() for k in ("valor", "total", "parcela"))
+                for i, col in enumerate(df_exp.columns)
+                if any(k in str(col).lower() for k in ("valor", "total", "parcela", "preco", "preço"))
             ]
             for col_idx in colunas_valor:
                 for row in ws.iter_rows(
@@ -189,7 +208,9 @@ def _gerar_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
                     min_col=col_idx, max_col=col_idx
                 ):
                     for cell in row:
-                        cell.number_format = _FMT_MOEDA_EXCEL
+                        # Só aplica formato numérico se o valor for de fato numérico
+                        if isinstance(cell.value, (int, float)) and cell.value is not None:
+                            cell.number_format = _FMT_MOEDA_EXCEL
     return buf.getvalue()
 
 
@@ -201,16 +222,25 @@ _RATEIO_MANUAL_PATH = os.path.join(DIR_DADOS, "rateio_manual.csv")
 
 def _carregar_rateio_manual() -> pd.DataFrame:
     """Retorna DataFrame do rateio_manual.csv ou vazio se não existir."""
+    _empty = pd.DataFrame(
+        columns=["material", "departamento", "programa_orcamentario", "proporcao", "atualizado_em"]
+    )
     if not os.path.exists(_RATEIO_MANUAL_PATH):
-        return pd.DataFrame(
-            columns=["material", "departamento", "programa_orcamentario", "proporcao", "atualizado_em"]
-        )
+        return _empty
     try:
-        return pd.read_csv(_RATEIO_MANUAL_PATH, sep=";", dtype={"material": str})
+        df = pd.read_csv(_RATEIO_MANUAL_PATH, sep=";", dtype={"material": str})
+        # Garantir que proporcao seja float — pode vir como string "0,023199"
+        # se o CSV foi gravado em ambiente com locale brasileiro
+        if "proporcao" in df.columns:
+            df["proporcao"] = (
+                df["proporcao"]
+                .astype(str)
+                .str.replace(",", ".", regex=False)
+            )
+            df["proporcao"] = pd.to_numeric(df["proporcao"], errors="coerce").fillna(0.0)
+        return df
     except Exception:
-        return pd.DataFrame(
-            columns=["material", "departamento", "programa_orcamentario", "proporcao", "atualizado_em"]
-        )
+        return _empty
 
 
 def _salvar_rateio_manual(material: str, linhas: list[dict]) -> None:
@@ -2637,8 +2667,15 @@ if "resultado" in st.session_state:
         dfs_excel["Visão Orçamentária"] = vis_orc
     if not vis_cx.empty:
         dfs_excel["Visão de Caixa"] = vis_cx
-    if not detalhe_fluxo.empty:
-        dfs_excel["Rastreio Pagamentos"] = detalhe_fluxo.sort_values(
+    # Usar df_fluxo_bruto (com rateio por depto/programa) em vez de detalhe_fluxo (sem rateio)
+    _rastreio_exp = df_fluxo_bruto if not df_fluxo_bruto.empty else detalhe_fluxo
+    if not _rastreio_exp.empty:
+        # Garantir que colunas de valor sejam float puro antes de exportar
+        _rastreio_exp = _rastreio_exp.copy()
+        for _col in ["valor_parcela", "valor_pedido_total", "valor_rateado"]:
+            if _col in _rastreio_exp.columns:
+                _rastreio_exp[_col] = pd.to_numeric(_rastreio_exp[_col], errors="coerce")
+        dfs_excel["Rastreio Pagamentos"] = _rastreio_exp.sort_values(
             ["mes_pagamento", "mes_entrega"]
         ).reset_index(drop=True)
 
