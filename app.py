@@ -197,22 +197,8 @@ def _gerar_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
                         df_exp[col] = pd.to_numeric(df_exp[col], errors="coerce")
 
                 df_exp.to_excel(writer, sheet_name=nome_aba[:31], index=True)
-                ws = writer.sheets[nome_aba[:31]]
-                # Aplica formato contábil nas colunas de valor
-                colunas_valor = [
-                    i + 2  # +1 porque index ocupa col A, +1 para base 1
-                    for i, col in enumerate(df_exp.columns)
-                    if any(k in str(col).lower() for k in ("valor", "total", "parcela", "preco", "preço"))
-                ]
-                for col_idx in colunas_valor:
-                    for row in ws.iter_rows(
-                        min_row=2, max_row=ws.max_row,
-                        min_col=col_idx, max_col=col_idx
-                    ):
-                        for cell in row:
-                            # Só aplica formato numérico se o valor for de fato numérico
-                            if isinstance(cell.value, (int, float)) and cell.value is not None:
-                                cell.number_format = _FMT_MOEDA_EXCEL
+                # Exportar valores sem formatação — apenas números puros
+                # Usuário faz a formatação conforme necessário
         return buf.getvalue()
     except Exception as e:
         # Se openpyxl falhar completamente, lançar erro (não usar CSV como fallback)
