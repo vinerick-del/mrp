@@ -2689,10 +2689,27 @@ if "resultado" in st.session_state:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-    except ImportError:
-        st.warning("openpyxl não instalado — execute: pip install openpyxl")
+    except ImportError as e:
+        # Tentar alternativa com xlsxwriter se openpyxl não disponível
+        try:
+            import xlsxwriter
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                for nome_aba, df in dfs_excel.items():
+                    df.to_excel(writer, sheet_name=nome_aba[:31], index=True)
+            excel_bytes = buf.getvalue()
+            nome_arquivo = f"mrp_{date.today().strftime('%Y%m%d')}.xlsx"
+            st.download_button(
+                label="⬇ Baixar Excel (todas as abas)",
+                data=excel_bytes,
+                file_name=nome_arquivo,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except ImportError:
+            st.error("❌ Nenhuma biblioteca Excel disponível. Instale: `pip install openpyxl` ou `pip install xlsxwriter`")
     except Exception as exc:
-        st.error(f"Erro ao gerar Excel: {exc}")
+        st.error(f"❌ Erro ao gerar Excel: {exc}")
 
 else:
     # Estado inicial — instrução ao usuário
