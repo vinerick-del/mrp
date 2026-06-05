@@ -768,8 +768,12 @@ def _processar_rateio_dfp(
 
     # ── Join com rateio ──────────────────────────────────────────────────────
     if not rateio_cfg.empty:
-        _rc = rateio_cfg.copy()
+        _rc = rateio_cfg[["material", "departamento", "programa_orcamentario", "proporcao"]].copy()
         _rc["material"] = _rc["material"].astype(str).str.strip()
+        _rc = _rc.drop_duplicates(["material", "departamento", "programa_orcamentario"])
+        # Normalizar proporções por material para que somem 1.0
+        _soma_prop = _rc.groupby("material")["proporcao"].transform("sum")
+        _rc["proporcao"] = (_rc["proporcao"] / _soma_prop.replace(0, 1)).clip(0, 1)
         merged = merged.merge(
             _rc.rename(columns={"material": "Material"}),
             on="Material", how="left",
@@ -3270,6 +3274,9 @@ if "resultado" in st.session_state:
                         if os.path.exists(_rateio_base_p):
                             _sep_rb = ";" if ";" in open(_rateio_base_p).read(300) else ","
                             _rateio_cfg = pd.read_csv(_rateio_base_p, sep=_sep_rb, dtype={"material": str})
+                            # 05_rateio_final.csv tem proporcao_pct (0-100) mas não proporcao
+                            if "proporcao" not in _rateio_cfg.columns and "proporcao_pct" in _rateio_cfg.columns:
+                                _rateio_cfg["proporcao"] = _rateio_cfg["proporcao_pct"] / 100
 
                     # Sempre aplicar overrides do rateio_manual.csv (substitui por material)
                     _rateio_manual_p = os.path.join(DIR_DADOS, "rateio_manual.csv")
@@ -3298,16 +3305,17 @@ if "resultado" in st.session_state:
                             _to_numeric_sap(_aba_dfp[_col_val_dfp]).sum()
                             if _col_val_dfp in _aba_dfp.columns else 0.0
                         )
-                        _tot_rat      = _res_dfp["Valor Rateado (R$)"].sum()
                         # Separar causas do não-rateio:
                         # 1) PO não encontrado no MB51 → Material = NAO_IDENTIFICADO
                         # 2) Material identificado mas sem rateio configurado → Departamento = NAO_DEFINIDO com material real
                         _mask_sem_mb  = _res_dfp["Material identificado"] == "NAO_IDENTIFICADO"
                         _mask_sem_rat = (_res_dfp["Departamento"] == "NAO_DEFINIDO") & ~_mask_sem_mb
+                        _mask_rat_ok  = ~_mask_sem_mb & ~_mask_sem_rat
+                        _tot_rat_ok   = _res_dfp.loc[_mask_rat_ok, "Valor Rateado (R$)"].sum()
+                        _tot_rat_ok   = min(_tot_rat_ok, _tot_orig)
+                        _tot_nao_rat  = _tot_orig - _tot_rat_ok
                         _tot_sem_mb   = _res_dfp.loc[_mask_sem_mb,  "Valor Rateado (R$)"].sum()
                         _tot_sem_rat  = _res_dfp.loc[_mask_sem_rat, "Valor Rateado (R$)"].sum()
-                        _tot_nao_rat  = _tot_sem_mb + _tot_sem_rat
-                        _tot_rat_ok   = _tot_rat - _tot_nao_rat
 
                         _dc1, _dc2, _dc3 = st.columns(3)
                         _dc1.metric("Total DFP (R$)",     _fmt_brl_contabil(_tot_orig))
